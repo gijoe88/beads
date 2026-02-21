@@ -68,7 +68,7 @@ Workflow customization:
 
 		// Check for custom PRIME.md override (unless --export flag)
 		// This allows users to fully customize workflow instructions
-		// Check local .beads/ first (even if redirected), then redirected location
+		// Priority: local .beads/ > redirected location > global ~/.config/beads/
 		if !primeExportMode {
 			localPrimePath := filepath.Join(".beads", "PRIME.md")
 			redirectedPrimePath := filepath.Join(beadsDir, "PRIME.md")
@@ -84,6 +84,15 @@ Workflow customization:
 			if content, err := os.ReadFile(redirectedPrimePath); err == nil {
 				fmt.Print(string(content))
 				return
+			}
+			// Fall back to global user configuration
+			if home, err := os.UserHomeDir(); err == nil {
+				globalPrimePath := filepath.Join(home, ".config", "beads", "PRIME.md")
+				// #nosec G304 -- path is constructed from user home directory
+				if content, err := os.ReadFile(globalPrimePath); err == nil {
+					fmt.Print(string(content))
+					return
+				}
 			}
 		}
 

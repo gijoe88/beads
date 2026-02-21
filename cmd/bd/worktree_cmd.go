@@ -177,16 +177,24 @@ func runWorktreeCreate(cmd *cobra.Command, args []string) error {
 		branch = filepath.Base(name)
 	}
 
+	// Check if branch already exists to avoid partial-creation race condition
+	// If we blindly try "git worktree add -b <branch>" and the branch exists,
+	// git may partially create the worktree directory before failing, leaving
+	// the directory in place and causing subsequent retry to fail.
+	branchExists := gitBranchExists(ctx, repoRoot, branch)
+
 	// Create the worktree using secure git command
-	gitCmd := gitCmdInDir(ctx, repoRoot, "worktree", "add", "-b", branch, worktreePath)
+	var gitCmd *exec.Cmd
+	if branchExists {
+		// Branch exists: checkout existing branch
+		gitCmd = gitCmdInDir(ctx, repoRoot, "worktree", "add", worktreePath, branch)
+	} else {
+		// Branch doesn't exist: create new branch
+		gitCmd = gitCmdInDir(ctx, repoRoot, "worktree", "add", "-b", branch, worktreePath)
+	}
 	output, err := gitCmd.CombinedOutput()
 	if err != nil {
-		// Try without -b if branch already exists
-		gitCmd = gitCmdInDir(ctx, repoRoot, "worktree", "add", worktreePath, branch)
-		output, err = gitCmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("failed to create worktree: %w\n%s", err, string(output))
-		}
+		return fmt.Errorf("failed to create worktree: %w\n%s", err, string(output))
 	}
 
 	// Helper to clean up worktree on failure
@@ -672,6 +680,18 @@ func getWorktreeCurrentBranch(ctx context.Context, dir string) string {
 		return "(unknown)"
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// gitBranchExists checks if a branch exists in the repository.
+// This is used to avoid the partial-creation race in worktree add.
+func gitBranchExists(ctx context.Context, repoRoot, branch string) bool {
+	gitCmd := gitCmdInDir(ctx, repoRoot, "branch", "--list", branch)
+	output, err := gitCmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	// git branch --list returns the branch name if it exists, empty otherwise
+	return strings.TrimSpace(string(output)) != ""
 }
 
 func addToGitignore(repoRoot, entry string) error {

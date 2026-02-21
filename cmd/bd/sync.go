@@ -10,18 +10,22 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 )
 
-// syncCmd exports Dolt database to JSONL for backward compatibility.
-// With Dolt-native storage, writes are persisted immediately — but callers
-// (hooks, scripts) still expect "bd sync" to produce an up-to-date JSONL file.
+// syncCmd commits pending Dolt changes and exports to JSONL.
+// This ensures Dolt and JSONL stay in sync with git commits via pre-commit hook.
 var syncCmd = &cobra.Command{
 	Use:     "sync",
 	GroupID: "sync",
-	Short:   "Export database to JSONL (Dolt persists writes immediately)",
-	Long: `With Dolt-native storage, all writes are persisted immediately.
-This command exports the database to JSONL so that the on-disk JSONL file
-stays in sync with Dolt, which is required by bd doctor and git-based workflows.
+	Short:   "Commit Dolt changes and export to JSONL",
+	Long: `Sync ensures Dolt database state is committed and exported to JSONL.
 
-For Dolt remote operations, use:
+This command:
+1. Commits any pending Dolt changes (captures bd create/update/close operations)
+2. Exports database to JSONL (for git-based workflows)
+3. Pushes to Dolt remote if configured
+
+Called by pre-commit hook to ensure Dolt commits when git commits.
+
+For Dolt remote operations:
   bd dolt push     Push to Dolt remote
   bd dolt pull     Pull from Dolt remote
 
@@ -38,6 +42,16 @@ For data interchange:
 		beadsDir := beads.FindBeadsDir()
 		if beadsDir == "" {
 			return
+		}
+
+		// First: Commit any pending Dolt changes
+		// This ensures bd create/update/close operations are captured before export
+		commitMsg := fmt.Sprintf("bd sync (auto-commit) by %s", getActor())
+		if err := store.Commit(rootCtx, commitMsg); err != nil {
+			// "nothing to commit" is expected when no changes - not an error
+			if !isDoltNothingToCommit(err) {
+				fmt.Fprintf(os.Stderr, "Warning: Dolt commit failed: %v\n", err)
+			}
 		}
 
 		// In dolt-native mode, skip JSONL export — Dolt is the source of truth.

@@ -605,6 +605,12 @@ func hookPostMergeDolt(beadsDir string) int {
 		return 0
 	}
 
+	// Commit any pending changes on original branch before merge
+	// This prevents "local changes would be stomped by merge" errors
+	if err := store.Commit(ctx, "Auto-commit before merge"); err != nil {
+		// Ignore error - may be nothing to commit
+	}
+
 	// Merge import branch (Dolt provides cell-level merge)
 	conflicts, err := store.Merge(ctx, importBranch)
 	if err != nil {

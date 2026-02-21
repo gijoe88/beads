@@ -543,6 +543,24 @@ func hookPostMerge(args []string) int {
 		return 0
 	}
 
+	// Also skip Dolt ops if we're in a git worktree without a local dolt directory.
+	// This handles the case where the hook runs DURING worktree creation, before
+	// the redirect file is created. The main worktree owns the dolt database.
+	if isGitWorktree() {
+		// Check for local .beads/dolt in the current directory (the worktree root)
+		cwd, _ := os.Getwd()
+		if cwd != "" {
+			localDoltDir := filepath.Join(cwd, ".beads", "dolt")
+			if _, err := os.Stat(localDoltDir); os.IsNotExist(err) {
+				// No local dolt dir - this worktree shares the main worktree's database
+				if cfg.ChainStrategy == ChainAfter {
+					return runChainedHookWithConfig("post-merge", args, cfg)
+				}
+				return 0
+			}
+		}
+	}
+
 	// Check if we're using Dolt backend - use branch-then-merge pattern
 	backend := dolt.GetBackendFromConfig(beadsDir)
 	if backend == configfile.BackendDolt {
@@ -755,6 +773,24 @@ func hookPostCheckout(args []string) int {
 			return runChainedHookWithConfig("post-checkout", args, cfg)
 		}
 		return 0
+	}
+
+	// Also skip Dolt ops if we're in a git worktree without a local dolt directory.
+	// This handles the case where the hook runs DURING worktree creation, before
+	// the redirect file is created. The main worktree owns the dolt database.
+	if isGitWorktree() {
+		// Check for local .beads/dolt in the current directory (the worktree root)
+		cwd, _ := os.Getwd()
+		if cwd != "" {
+			localDoltDir := filepath.Join(cwd, ".beads", "dolt")
+			if _, err := os.Stat(localDoltDir); os.IsNotExist(err) {
+				// No local dolt dir - this worktree shares the main worktree's database
+				if cfg.ChainStrategy == ChainAfter {
+					return runChainedHookWithConfig("post-checkout", args, cfg)
+				}
+				return 0
+			}
+		}
 	}
 
 	// Check if we're using Dolt backend

@@ -555,6 +555,15 @@ func hookPostMerge(args []string) int {
 func hookPostMergeDolt(beadsDir string) int {
 	ctx := context.Background()
 
+	// Check if Dolt database directory exists before trying to open
+	// This prevents panics when called on newly created worktrees
+	doltDir := filepath.Join(beadsDir, "dolt")
+	if _, err := os.Stat(doltDir); os.IsNotExist(err) {
+		// Database doesn't exist yet - silently skip (not an error)
+		// This is normal for newly created worktrees
+		return 0
+	}
+
 	// Open storage using config to get the correct database name (e.g. "beads_bd")
 	store, err := dolt.NewFromConfig(ctx, beadsDir)
 	if err != nil {

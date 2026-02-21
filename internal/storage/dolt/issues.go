@@ -223,6 +223,28 @@ func (s *DoltStore) CreateIssuesWithFullOptions(ctx context.Context, issues []*t
 			}
 		}
 
+		// Check if issue already exists (for import/merge scenarios)
+		existing, err := scanIssueTx(ctx, tx, issue.ID)
+		if err != nil {
+			return fmt.Errorf("failed to check existing issue %s: %w", issue.ID, err)
+		}
+
+		if existing != nil {
+			// Issue exists - compare timestamps to decide whether to update
+			if issue.UpdatedAt.After(existing.UpdatedAt) {
+				// Incoming is newer - update it
+				if err := updateIssueTx(ctx, tx, issue); err != nil {
+					return fmt.Errorf("failed to update issue %s: %w", issue.ID, err)
+				}
+				if err := recordEvent(ctx, tx, issue.ID, types.EventUpdated, actor, "", ""); err != nil {
+					return fmt.Errorf("failed to record event for %s: %w", issue.ID, err)
+				}
+			}
+			// Else: existing is newer or same age, skip (preserve local changes)
+			continue
+		}
+
+		// New issue - insert it
 		if err := insertIssue(ctx, tx, issue); err != nil {
 			return fmt.Errorf("failed to insert issue %s: %w", issue.ID, err)
 		}
@@ -871,6 +893,38 @@ func doltBuildSQLInClause(ids []string) (string, []interface{}) {
 // =============================================================================
 // Helper functions
 // =============================================================================
+
+// updateIssueTx updates all fields of an existing issue within a transaction.
+// Used during import when incoming issue has newer UpdatedAt timestamp.
+func updateIssueTx(ctx context.Context, tx *sql.Tx, issue *types.Issue) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE issues SET
+			content_hash = ?, title = ?, description = ?, design = ?, acceptance_criteria = ?, notes = ?,
+			status = ?, priority = ?, issue_type = ?, assignee = ?, estimated_minutes = ?,
+			created_at = ?, created_by = ?, owner = ?, updated_at = ?, closed_at = ?, external_ref = ?, spec_id = ?,
+			compaction_level = ?, compacted_at = ?, compacted_at_commit = ?, original_size = ?,
+			sender = ?, ephemeral = ?, wisp_type = ?, pinned = ?, is_template = ?, crystallizes = ?,
+			mol_type = ?, work_type = ?, quality_score = ?, source_system = ?, source_repo = ?, close_reason = ?,
+			event_kind = ?, actor = ?, target = ?, payload = ?,
+			await_type = ?, await_id = ?, timeout_ns = ?, waiters = ?,
+			hook_bead = ?, role_bead = ?, agent_state = ?, last_activity = ?, role_type = ?, rig = ?,
+			due_at = ?, defer_until = ?, metadata = ?
+		WHERE id = ?
+	`,
+		issue.ContentHash, issue.Title, issue.Description, issue.Design, issue.AcceptanceCriteria, issue.Notes,
+		issue.Status, issue.Priority, issue.IssueType, nullString(issue.Assignee), nullInt(issue.EstimatedMinutes),
+		issue.CreatedAt, issue.CreatedBy, issue.Owner, issue.UpdatedAt, issue.ClosedAt, nullStringPtr(issue.ExternalRef), issue.SpecID,
+		issue.CompactionLevel, issue.CompactedAt, nullStringPtr(issue.CompactedAtCommit), nullIntVal(issue.OriginalSize),
+		issue.Sender, issue.Ephemeral, issue.WispType, issue.Pinned, issue.IsTemplate, issue.Crystallizes,
+		issue.MolType, issue.WorkType, issue.QualityScore, issue.SourceSystem, issue.SourceRepo, issue.CloseReason,
+		issue.EventKind, issue.Actor, issue.Target, issue.Payload,
+		issue.AwaitType, issue.AwaitID, issue.Timeout.Nanoseconds(), formatJSONStringArray(issue.Waiters),
+		issue.HookBead, issue.RoleBead, issue.AgentState, issue.LastActivity, issue.RoleType, issue.Rig,
+		issue.DueAt, issue.DeferUntil, jsonMetadata(issue.Metadata),
+		issue.ID,
+	)
+	return err
+}
 
 func insertIssue(ctx context.Context, tx *sql.Tx, issue *types.Issue) error {
 	_, err := tx.ExecContext(ctx, `

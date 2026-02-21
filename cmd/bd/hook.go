@@ -555,12 +555,27 @@ func hookPostMerge(args []string) int {
 func hookPostMergeDolt(beadsDir string) int {
 	ctx := context.Background()
 
-	// Check if Dolt database directory exists before trying to open
-	// This prevents panics when called on newly created worktrees
+	// Check if this is a redirected worktree (has redirect file but no local dolt dir)
+	// Redirected worktrees share the main worktree's database, so skip Dolt ops here
+	redirectFile := filepath.Join(beadsDir, beads.RedirectFileName)
 	doltDir := filepath.Join(beadsDir, "dolt")
-	if _, err := os.Stat(doltDir); os.IsNotExist(err) {
-		// Database doesn't exist yet - silently skip (not an error)
-		// This is normal for newly created worktrees
+	hasRedirect := false
+	if _, err := os.Stat(redirectFile); err == nil {
+		hasRedirect = true
+	}
+	hasDoltDir := false
+	if _, err := os.Stat(doltDir); err == nil {
+		hasDoltDir = true
+	}
+
+	// If we have a redirect but no local dolt dir, skip Dolt operations
+	// The main worktree owns the database and handles sync
+	if hasRedirect && !hasDoltDir {
+		return 0
+	}
+
+	// Also skip if no dolt directory exists at all
+	if !hasDoltDir {
 		return 0
 	}
 

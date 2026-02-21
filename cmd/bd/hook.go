@@ -532,6 +532,17 @@ func hookPostMerge(args []string) int {
 		return 0
 	}
 
+	// Skip Dolt operations in redirected worktrees - main worktree handles sync
+	// This must be checked BEFORE calling hookPostMergeDolt because FindBeadsDir()
+	// follows the redirect, making the check inside hookPostMergeDolt ineffective.
+	redirectInfo := beads.GetRedirectInfo()
+	if redirectInfo.IsRedirected {
+		if cfg.ChainStrategy == ChainAfter {
+			return runChainedHookWithConfig("post-merge", args, cfg)
+		}
+		return 0
+	}
+
 	// Check if we're using Dolt backend - use branch-then-merge pattern
 	backend := dolt.GetBackendFromConfig(beadsDir)
 	if backend == configfile.BackendDolt {
@@ -733,6 +744,17 @@ func hookPostCheckout(args []string) int {
 		fmt.Fprintln(os.Stderr, "║   export BEADS_NO_DAEMON=1                                               ║")
 		fmt.Fprintln(os.Stderr, "╚══════════════════════════════════════════════════════════════════════════╝")
 		fmt.Fprintln(os.Stderr, "")
+	}
+
+	// Skip Dolt operations in redirected worktrees - main worktree handles sync
+	// This must be checked BEFORE calling hookPostMergeDolt because FindBeadsDir()
+	// follows the redirect, making the check inside hookPostMergeDolt ineffective.
+	redirectInfo := beads.GetRedirectInfo()
+	if redirectInfo.IsRedirected {
+		if cfg.ChainStrategy == ChainAfter {
+			return runChainedHookWithConfig("post-checkout", args, cfg)
+		}
+		return 0
 	}
 
 	// Check if we're using Dolt backend

@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
-# bd-hooks-version: 0.24.2
+# bd-hooks-version: 0.24.3
 #
 # bd (beads) pre-push hook
 #
 # This hook prevents pushing stale JSONL by:
 # 1. Flushing any pending in-memory changes to JSONL (if bd available)
 # 2. Checking for uncommitted changes (staged, unstaged, untracked, deleted)
-# 3. Failing the push with clear instructions if changes found
+# 3. Auto-committing staged-only changes, or failing with instructions if unstaged
 #
 # The pre-commit hook already exports changes, but this catches:
 # - Changes made between commit and push
@@ -51,59 +51,81 @@ done
 if [ -n "$FILES" ]; then
     # shellcheck disable=SC2086
     if [ -n "$(git status --porcelain -- $FILES 2>/dev/null)" ]; then
-        echo "❌ Error: Beads JSONL has uncommitted changes" >&2
-        echo "" >&2
-        echo "You made changes to bd issues between your last commit and this push." >&2
-        echo "" >&2
+        # Check if changes are only staged (ready to commit) vs unstaged
+        # shellcheck disable=SC2086
+        STAGED=$(git diff --cached --name-only -- $FILES 2>/dev/null)
+        # shellcheck disable=SC2086
+        UNSTAGED=$(git diff --name-only -- $FILES 2>/dev/null)
+        # shellcheck disable=SC2086
+        UNTRACKED=$(git ls-files --others --exclude-standard -- $FILES 2>/dev/null)
 
-        # Check if bd is available and offer auto-sync
-        if command -v bd >/dev/null 2>&1; then
-            # Check if we're in an interactive terminal
-            if [ -t 0 ]; then
-                echo "Would you like to run 'bd sync' now to commit and push these changes? [y/N]" >&2
-                read -r response
-                case "$response" in
-                    [yY][eE][sS]|[yY])
-                        echo "" >&2
-                        echo "Running: bd sync" >&2
-                        if bd sync; then
-                            echo "" >&2
-                            echo "✓ Sync complete. Continuing with push..." >&2
-                            exit 0
-                        else
-                            echo "" >&2
-                            echo "❌ Sync failed. Push aborted." >&2
-                            exit 1
-                        fi
-                        ;;
-                    *)
-                        echo "" >&2
-                        echo "Push aborted. Run 'bd sync' manually when ready:" >&2
-                        echo "" >&2
-                        echo "  bd sync" >&2
-                        echo "  git push" >&2
-                        echo "" >&2
-                        exit 1
-                        ;;
-                esac
+        # If only staged changes exist (no unstaged/untracked), auto-commit them
+        if [ -n "$STAGED" ] && [ -z "$UNSTAGED" ] && [ -z "$UNTRACKED" ]; then
+            echo "📝 Auto-committing staged JSONL changes..." >&2
+            # shellcheck disable=SC2086
+            git commit -m "chore: sync beads JSONL [pre-push hook]" --no-verify -- $FILES
+            if [ $? -eq 0 ]; then
+                echo "✓ Committed. Continuing with push..." >&2
             else
-                # Non-interactive: just show the message
-                echo "Run 'bd sync' to commit these changes:" >&2
+                echo "⚠️ Commit failed, but proceeding with push anyway..." >&2
+            fi
+            # Continue to push - don't exit here, let the push proceed
+        else
+            # Has unstaged or untracked changes - fail and prompt user
+            echo "❌ Error: Beads JSONL has uncommitted changes" >&2
+            echo "" >&2
+            echo "You made changes to bd issues between your last commit and this push." >&2
+            echo "" >&2
+
+            # Check if bd is available and offer auto-sync
+            if command -v bd >/dev/null 2>&1; then
+                # Check if we're in an interactive terminal
+                if [ -t 0 ]; then
+                    echo "Would you like to run 'bd sync' now to commit and push these changes? [y/N]" >&2
+                    read -r response
+                    case "$response" in
+                        [yY][eE][sS]|[yY])
+                            echo "" >&2
+                            echo "Running: bd sync" >&2
+                            if bd sync; then
+                                echo "" >&2
+                                echo "✓ Sync complete. Continuing with push..." >&2
+                                exit 0
+                            else
+                                echo "" >&2
+                                echo "❌ Sync failed. Push aborted." >&2
+                                exit 1
+                            fi
+                            ;;
+                        *)
+                            echo "" >&2
+                            echo "Push aborted. Run 'bd sync' manually when ready:" >&2
+                            echo "" >&2
+                            echo "  bd sync" >&2
+                            echo "  git push" >&2
+                            echo "" >&2
+                            exit 1
+                            ;;
+                    esac
+                else
+                    # Non-interactive: just show the message
+                    echo "Run 'bd sync' to commit these changes:" >&2
+                    echo "" >&2
+                    echo "  bd sync" >&2
+                    echo "" >&2
+                    exit 1
+                fi
+            else
+                # bd not available, fall back to manual git commands
+                echo "Please commit the updated JSONL before pushing:" >&2
                 echo "" >&2
-                echo "  bd sync" >&2
+                # shellcheck disable=SC2086
+                echo "  git add $FILES" >&2
+                echo '  git commit -m "Update bd JSONL"' >&2
+                echo "  git push" >&2
                 echo "" >&2
                 exit 1
             fi
-        else
-            # bd not available, fall back to manual git commands
-            echo "Please commit the updated JSONL before pushing:" >&2
-            echo "" >&2
-            # shellcheck disable=SC2086
-            echo "  git add $FILES" >&2
-            echo '  git commit -m "Update bd JSONL"' >&2
-            echo "  git push" >&2
-            echo "" >&2
-            exit 1
         fi
     fi
 fi

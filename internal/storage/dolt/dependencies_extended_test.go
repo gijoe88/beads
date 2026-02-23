@@ -5,6 +5,7 @@ package dolt
 import (
 	"testing"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -681,3 +682,308 @@ func TestAddDependency_MultipleExternalReferences(t *testing.T) {
 }
 
 // Note: testContext is already defined in dolt_test.go for this package
+
+// =============================================================================
+// CreateIssuesWithFullOptions Dependency Import Tests
+// =============================================================================
+
+func TestCreateIssuesWithFullOptions_ImportsDependencies(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	// Create issues with dependencies populated (simulating import from JSONL)
+	parentIssue := &types.Issue{
+		ID:        "import-parent",
+		Title:     "Parent Issue",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeEpic,
+	}
+	childIssue := &types.Issue{
+		ID:        "import-child",
+		Title:     "Child Issue",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+		Dependencies: []*types.Dependency{
+			{
+				IssueID:     "import-child",
+				DependsOnID: "import-parent",
+				Type:        types.DepParentChild,
+				CreatedBy:   "importer",
+			},
+		},
+	}
+
+	// Import both issues in a single batch
+	issues := []*types.Issue{parentIssue, childIssue}
+	opts := storage.BatchCreateOptions{
+		OrphanHandling:       storage.OrphanAllow,
+		SkipPrefixValidation: true,
+	}
+	if err := store.CreateIssuesWithFullOptions(ctx, issues, "importer", opts); err != nil {
+		t.Fatalf("CreateIssuesWithFullOptions failed: %v", err)
+	}
+
+	// Verify the dependency was imported
+	records, err := store.GetDependencyRecords(ctx, childIssue.ID)
+	if err != nil {
+		t.Fatalf("GetDependencyRecords failed: %v", err)
+	}
+
+	if len(records) != 1 {
+		t.Fatalf("expected 1 dependency, got %d", len(records))
+	}
+
+	if records[0].IssueID != childIssue.ID {
+		t.Errorf("expected IssueID %q, got %q", childIssue.ID, records[0].IssueID)
+	}
+	if records[0].DependsOnID != parentIssue.ID {
+		t.Errorf("expected DependsOnID %q, got %q", parentIssue.ID, records[0].DependsOnID)
+	}
+	if records[0].Type != types.DepParentChild {
+		t.Errorf("expected Type %q, got %q", types.DepParentChild, records[0].Type)
+	}
+}
+
+func TestCreateIssuesWithFullOptions_ImportsDependenciesWithBlocks(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	// Create issues with blocking dependencies
+	blocker := &types.Issue{
+		ID:        "import-blocker",
+		Title:     "Blocker Issue",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+	}
+	blocked := &types.Issue{
+		ID:        "import-blocked",
+		Title:     "Blocked Issue",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+		Dependencies: []*types.Dependency{
+			{
+				IssueID:     "import-blocked",
+				DependsOnID: "import-blocker",
+				Type:        types.DepBlocks,
+				CreatedBy:   "importer",
+			},
+		},
+	}
+
+	issues := []*types.Issue{blocker, blocked}
+	opts := storage.BatchCreateOptions{
+		OrphanHandling:       storage.OrphanAllow,
+		SkipPrefixValidation: true,
+	}
+	if err := store.CreateIssuesWithFullOptions(ctx, issues, "importer", opts); err != nil {
+		t.Fatalf("CreateIssuesWithFullOptions failed: %v", err)
+	}
+
+	// Verify the dependency was imported
+	records, err := store.GetDependencyRecords(ctx, blocked.ID)
+	if err != nil {
+		t.Fatalf("GetDependencyRecords failed: %v", err)
+	}
+
+	if len(records) != 1 {
+		t.Fatalf("expected 1 dependency, got %d", len(records))
+	}
+
+	if records[0].Type != types.DepBlocks {
+		t.Errorf("expected Type %q, got %q", types.DepBlocks, records[0].Type)
+	}
+}
+
+func TestCreateIssuesWithFullOptions_SkipsMissingDependencyTargets(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	// Create an issue with a dependency on a non-existent issue
+	// This should be skipped gracefully
+	issue := &types.Issue{
+		ID:        "import-orphan-dep",
+		Title:     "Issue with Missing Dependency",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+		Dependencies: []*types.Dependency{
+			{
+				IssueID:     "import-orphan-dep",
+				DependsOnID: "non-existent-issue",
+				Type:        types.DepBlocks,
+				CreatedBy:   "importer",
+			},
+		},
+	}
+
+	issues := []*types.Issue{issue}
+	opts := storage.BatchCreateOptions{
+		OrphanHandling:       storage.OrphanAllow,
+		SkipPrefixValidation: true,
+	}
+	// Should succeed, but dependency should not be created
+	if err := store.CreateIssuesWithFullOptions(ctx, issues, "importer", opts); err != nil {
+		t.Fatalf("CreateIssuesWithFullOptions failed: %v", err)
+	}
+
+	// Verify the issue was created
+	fetched, err := store.GetIssue(ctx, issue.ID)
+	if err != nil {
+		t.Fatalf("GetIssue failed: %v", err)
+	}
+	if fetched == nil {
+		t.Fatal("expected issue to be created")
+	}
+
+	// Verify the dependency was NOT created (target doesn't exist)
+	records, err := store.GetDependencyRecords(ctx, issue.ID)
+	if err != nil {
+		t.Fatalf("GetDependencyRecords failed: %v", err)
+	}
+
+	if len(records) != 0 {
+		t.Errorf("expected 0 dependencies (target doesn't exist), got %d", len(records))
+	}
+}
+
+func TestCreateIssuesWithFullOptions_ImportsExternalDependencies(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	// Create an issue with an external (cross-rig) dependency
+	issue := &types.Issue{
+		ID:        "import-external-dep",
+		Title:     "Issue with External Dependency",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+		Dependencies: []*types.Dependency{
+			{
+				IssueID:     "import-external-dep",
+				DependsOnID: "external:da:da-abc123",
+				Type:        types.DepBlocks,
+				CreatedBy:   "importer",
+			},
+		},
+	}
+
+	issues := []*types.Issue{issue}
+	opts := storage.BatchCreateOptions{
+		OrphanHandling:       storage.OrphanAllow,
+		SkipPrefixValidation: true,
+	}
+	if err := store.CreateIssuesWithFullOptions(ctx, issues, "importer", opts); err != nil {
+		t.Fatalf("CreateIssuesWithFullOptions failed: %v", err)
+	}
+
+	// Verify the external dependency was created
+	records, err := store.GetDependencyRecords(ctx, issue.ID)
+	if err != nil {
+		t.Fatalf("GetDependencyRecords failed: %v", err)
+	}
+
+	if len(records) != 1 {
+		t.Fatalf("expected 1 external dependency, got %d", len(records))
+	}
+
+	if records[0].DependsOnID != "external:da:da-abc123" {
+		t.Errorf("expected DependsOnID 'external:da:da-abc123', got %q", records[0].DependsOnID)
+	}
+}
+
+func TestCreateIssuesWithFullOptions_MultipleDependencies(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	// Create an epic with multiple children
+	epic := &types.Issue{
+		ID:        "import-epic",
+		Title:     "Epic with Multiple Children",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeEpic,
+	}
+	child1 := &types.Issue{
+		ID:        "import-child1",
+		Title:     "Child 1",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+		Dependencies: []*types.Dependency{
+			{
+				IssueID:     "import-child1",
+				DependsOnID: "import-epic",
+				Type:        types.DepParentChild,
+				CreatedBy:   "importer",
+			},
+		},
+	}
+	child2 := &types.Issue{
+		ID:        "import-child2",
+		Title:     "Child 2",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+		Dependencies: []*types.Dependency{
+			{
+				IssueID:     "import-child2",
+				DependsOnID: "import-epic",
+				Type:        types.DepParentChild,
+				CreatedBy:   "importer",
+			},
+			{
+				IssueID:     "import-child2",
+				DependsOnID: "import-child1",
+				Type:        types.DepBlocks,
+				CreatedBy:   "importer",
+			},
+		},
+	}
+
+	issues := []*types.Issue{epic, child1, child2}
+	opts := storage.BatchCreateOptions{
+		OrphanHandling:       storage.OrphanAllow,
+		SkipPrefixValidation: true,
+	}
+	if err := store.CreateIssuesWithFullOptions(ctx, issues, "importer", opts); err != nil {
+		t.Fatalf("CreateIssuesWithFullOptions failed: %v", err)
+	}
+
+	// Verify child1 has 1 dependency (parent-child to epic)
+	records1, err := store.GetDependencyRecords(ctx, child1.ID)
+	if err != nil {
+		t.Fatalf("GetDependencyRecords for child1 failed: %v", err)
+	}
+	if len(records1) != 1 {
+		t.Errorf("child1: expected 1 dependency, got %d", len(records1))
+	}
+
+	// Verify child2 has 2 dependencies (parent-child to epic + blocks on child1)
+	records2, err := store.GetDependencyRecords(ctx, child2.ID)
+	if err != nil {
+		t.Fatalf("GetDependencyRecords for child2 failed: %v", err)
+	}
+	if len(records2) != 2 {
+		t.Errorf("child2: expected 2 dependencies, got %d", len(records2))
+	}
+}
+

@@ -55,6 +55,53 @@ func (s *Store) CreateIssues(ctx context.Context, issues []*types.Issue, actor s
 		}
 	}
 
+	// Build a set of all issue IDs that exist (including those just imported)
+	existingIDs := make(map[string]bool)
+	idRows, err := tx.QueryContext(ctx, `SELECT id FROM issues`)
+	if err != nil {
+		return fmt.Errorf("failed to query existing issue IDs: %w", err)
+	}
+	for idRows.Next() {
+		var id string
+		if err := idRows.Scan(&id); err != nil {
+			_ = idRows.Close()
+			return fmt.Errorf("failed to scan issue ID: %w", err)
+		}
+		existingIDs[id] = true
+	}
+	_ = idRows.Close()
+
+	// Process dependencies from imported issues
+	for _, issue := range issues {
+		if len(issue.Dependencies) == 0 {
+			continue
+		}
+
+		for _, dep := range issue.Dependencies {
+			// Validate that the source issue ID matches (sanity check)
+			if dep.IssueID != issue.ID {
+				dep.IssueID = issue.ID // Fix it if mismatched
+			}
+
+			// Skip dependencies where the target doesn't exist (unless it's an external reference)
+			if !existingIDs[dep.DependsOnID] && !strings.HasPrefix(dep.DependsOnID, "external:") {
+				continue
+			}
+
+			// Insert the dependency (SQLite uses INSERT OR REPLACE for upsert)
+			metadata := dep.Metadata
+			if metadata == "" {
+				metadata = "{}"
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT OR REPLACE INTO dependencies (issue_id, depends_on_id, type, created_by, metadata, thread_id)
+				VALUES (?, ?, ?, ?, ?, ?)
+			`, dep.IssueID, dep.DependsOnID, dep.Type, dep.CreatedBy, metadata, dep.ThreadID); err != nil {
+				return fmt.Errorf("failed to import dependency %s -> %s: %w", dep.IssueID, dep.DependsOnID, err)
+			}
+		}
+	}
+
 	return tx.Commit()
 }
 

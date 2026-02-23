@@ -751,6 +751,50 @@ func runPrePushHook(args []string) int {
 	}
 	output, _ := statusCmd.Output()
 	if len(output) > 0 {
+		// Check if changes are only staged (ready to commit) vs unstaged/untracked
+		// If only staged, auto-commit them. If unstaged/untracked, block and prompt.
+		stagedArgs := append([]string{"diff", "--cached", "--name-only", "--"}, files...)
+		unstagedArgs := append([]string{"diff", "--name-only", "--"}, files...)
+		untrackedArgs := append([]string{"ls-files", "--others", "--exclude-standard", "--"}, files...)
+
+		var stagedCmd, unstagedCmd, untrackedCmd *exec.Cmd
+		if rcErr == nil {
+			stagedCmd = rc.GitCmdCWD(ctx, stagedArgs...)
+			unstagedCmd = rc.GitCmdCWD(ctx, unstagedArgs...)
+			untrackedCmd = rc.GitCmdCWD(ctx, untrackedArgs...)
+		} else {
+			stagedCmd = exec.Command("git", stagedArgs...)
+			unstagedCmd = exec.Command("git", unstagedArgs...)
+			untrackedCmd = exec.Command("git", untrackedArgs...)
+		}
+
+		stagedOutput, _ := stagedCmd.Output()
+		unstagedOutput, _ := unstagedCmd.Output()
+		untrackedOutput, _ := untrackedCmd.Output()
+
+		hasStaged := len(strings.TrimSpace(string(stagedOutput))) > 0
+		hasUnstaged := len(strings.TrimSpace(string(unstagedOutput))) > 0
+		hasUntracked := len(strings.TrimSpace(string(untrackedOutput))) > 0
+
+		// If only staged changes exist (no unstaged/untracked), auto-commit them
+		if hasStaged && !hasUnstaged && !hasUntracked {
+			fmt.Fprintln(os.Stderr, "📝 Auto-committing staged JSONL changes...")
+			commitArgs := append([]string{"commit", "-m", "chore: sync beads JSONL [pre-push hook]", "--no-verify", "--"}, files...)
+			var commitCmd *exec.Cmd
+			if rcErr == nil {
+				commitCmd = rc.GitCmdCWD(ctx, commitArgs...)
+			} else {
+				commitCmd = exec.Command("git", commitArgs...)
+			}
+			if commitCmd.Run() == nil {
+				fmt.Fprintln(os.Stderr, "✓ Committed. Continuing with push...")
+			} else {
+				fmt.Fprintln(os.Stderr, "⚠️ Commit failed, but proceeding with push anyway...")
+			}
+			return 0
+		}
+
+		// Has unstaged or untracked changes - block and prompt
 		fmt.Fprintln(os.Stderr, "❌ Error: Uncommitted changes detected")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Before pushing, ensure all changes are committed. This includes:")

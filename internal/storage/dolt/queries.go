@@ -815,7 +815,9 @@ func (s *DoltStore) GetMoleculeProgress(ctx context.Context, moleculeID string) 
 	return stats, nil
 }
 
-// GetNextChildID returns the next available child ID for a parent
+// GetNextChildID returns the next available child ID for a parent.
+// It queries both the child_counters table AND the issues table to ensure
+// we never create a duplicate ID, even if the counter is out of sync.
 func (s *DoltStore) GetNextChildID(ctx context.Context, parentID string) (string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -823,16 +825,34 @@ func (s *DoltStore) GetNextChildID(ctx context.Context, parentID string) (string
 	}
 	defer tx.Rollback()
 
-	// Get or create counter
-	var lastChild int
-	err = tx.QueryRowContext(ctx, "SELECT last_child FROM child_counters WHERE parent_id = ?", parentID).Scan(&lastChild)
+	// 1. Get counter from child_counters table (may be out of sync)
+	var counterLastChild int
+	err = tx.QueryRowContext(ctx, "SELECT last_child FROM child_counters WHERE parent_id = ?", parentID).Scan(&counterLastChild)
 	if err == sql.ErrNoRows {
-		lastChild = 0
+		counterLastChild = 0
 	} else if err != nil {
 		return "", err
 	}
 
-	nextChild := lastChild + 1
+	// 2. Also check actual issues table for existing children (regardless of status)
+	// This handles cases where children were created with explicit IDs or counter got out of sync
+	var issuesLastChild sql.NullInt64
+	err = tx.QueryRowContext(ctx, `
+		SELECT MAX(CAST(SUBSTRING_INDEX(id, '.', -1) AS UNSIGNED))
+		FROM issues
+		WHERE id LIKE ?
+	`, parentID+".%").Scan(&issuesLastChild)
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+
+	// 3. Use the maximum of both to ensure we don't create duplicates
+	maxChild := counterLastChild
+	if issuesLastChild.Valid && int(issuesLastChild.Int64) > maxChild {
+		maxChild = int(issuesLastChild.Int64)
+	}
+
+	nextChild := maxChild + 1
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO child_counters (parent_id, last_child) VALUES (?, ?)

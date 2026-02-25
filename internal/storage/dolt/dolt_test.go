@@ -1514,3 +1514,121 @@ func TestCloseWithTimeout(t *testing.T) {
 		_ = originalTimeout // silence unused warning
 	})
 }
+
+// TestGetNextChildID_WithClosedChildren verifies that GetNextChildID correctly
+// handles the case where children exist (closed or open) but the counter is out of sync.
+// This was a bug where the counter only tracked open children, leading to duplicate IDs.
+func TestGetNextChildID_WithClosedChildren(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	// Create parent issue
+	parent := &types.Issue{
+		ID:        "test-parent",
+		Title:     "Parent Issue",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+	}
+	if err := store.CreateIssue(ctx, parent, "test-user"); err != nil {
+		t.Fatalf("failed to create parent: %v", err)
+	}
+
+	// Create child .1 using GetNextChildID
+	child1ID, err := store.GetNextChildID(ctx, "test-parent")
+	if err != nil {
+		t.Fatalf("GetNextChildID failed: %v", err)
+	}
+	if child1ID != "test-parent.1" {
+		t.Fatalf("expected test-parent.1, got %s", child1ID)
+	}
+
+	child1 := &types.Issue{
+		ID:        child1ID,
+		Title:     "Child 1",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+	}
+	if err := store.CreateIssue(ctx, child1, "test-user"); err != nil {
+		t.Fatalf("failed to create child1: %v", err)
+	}
+
+	// Close child .1
+	if err := store.UpdateIssue(ctx, child1ID, map[string]interface{}{"status": types.StatusClosed}, "test-user"); err != nil {
+		t.Fatalf("failed to close child1: %v", err)
+	}
+
+	// Now simulate counter being reset/out of sync by deleting it
+	_, err = store.db.ExecContext(ctx, "DELETE FROM child_counters WHERE parent_id = ?", "test-parent")
+	if err != nil {
+		t.Fatalf("failed to reset counter: %v", err)
+	}
+
+	// GetNextChildID should still return .2, not .1 (which exists but is closed)
+	child2ID, err := store.GetNextChildID(ctx, "test-parent")
+	if err != nil {
+		t.Fatalf("GetNextChildID failed after counter reset: %v", err)
+	}
+	if child2ID != "test-parent.2" {
+		t.Errorf("expected test-parent.2 (to avoid duplicate), got %s", child2ID)
+	}
+
+	// Verify we can create the issue without duplicate key error
+	child2 := &types.Issue{
+		ID:        child2ID,
+		Title:     "Child 2",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+	}
+	if err := store.CreateIssue(ctx, child2, "test-user"); err != nil {
+		t.Errorf("failed to create child2: %v", err)
+	}
+}
+
+// TestGetNextChildID_WithExplicitChildID verifies that GetNextChildID handles
+// children created with explicit IDs (bypassing the counter).
+func TestGetNextChildID_WithExplicitChildID(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	// Create parent issue
+	parent := &types.Issue{
+		ID:        "test-parent2",
+		Title:     "Parent Issue",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+	}
+	if err := store.CreateIssue(ctx, parent, "test-user"); err != nil {
+		t.Fatalf("failed to create parent: %v", err)
+	}
+
+	// Create child .5 directly with explicit ID (bypassing counter)
+	child5 := &types.Issue{
+		ID:        "test-parent2.5",
+		Title:     "Explicit Child",
+		Status:    types.StatusOpen,
+		Priority:  2,
+		IssueType: types.TypeTask,
+	}
+	if err := store.CreateIssue(ctx, child5, "test-user"); err != nil {
+		t.Fatalf("failed to create child with explicit ID: %v", err)
+	}
+
+	// GetNextChildID should return .6, not .1 (counter is 0, but .5 exists)
+	nextID, err := store.GetNextChildID(ctx, "test-parent2")
+	if err != nil {
+		t.Fatalf("GetNextChildID failed: %v", err)
+	}
+	if nextID != "test-parent2.6" {
+		t.Errorf("expected test-parent2.6 (to account for existing .5), got %s", nextID)
+	}
+}

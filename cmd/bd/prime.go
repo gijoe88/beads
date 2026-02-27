@@ -196,6 +196,13 @@ func getRedirectNotice(verbose bool) string {
 	return fmt.Sprintf("**Note**: Beads redirected to %s (shared with other clones)\n\n", redirectInfo.TargetDir)
 }
 
+// getWorktreeNotice returns a notice about worktree behavior (always shown for defensive awareness)
+func getWorktreeNotice() string {
+	return `> ⚠️ **Database location**: ` + "`bd sync`" + ` writes to the main repo's issues.jsonl (shared by all worktrees).
+
+`
+}
+
 // outputPrimeContext outputs workflow context in markdown format
 func outputPrimeContext(w io.Writer, mcpMode bool, stealthMode bool) error {
 	if mcpMode {
@@ -223,10 +230,11 @@ func outputMCPContext(w io.Writer, stealthMode bool) error {
 	}
 
 	redirectNotice := getRedirectNotice(false)
+	worktreeNotice := getWorktreeNotice()
 
 	context := `# Beads Issue Tracker Active
 
-` + redirectNotice + `# 🚨 SESSION CLOSE PROTOCOL 🚨
+` + redirectNotice + worktreeNotice + `# 🚨 SESSION CLOSE PROTOCOL 🚨
 
 ` + closeProtocol + `
 
@@ -291,12 +299,12 @@ git add . && git commit -m "..."  # Commit your changes
 	} else if noPush {
 		closeProtocol = `[ ] 1. git status              (check what changed)
 [ ] 2. git add <files>         (stage code changes)
-[ ] 3. bd sync                 (commit beads changes)
+[ ] 3. bd sync                 (commit beads, update issues.jsonl)
 [ ] 4. git commit -m "..."     (commit code)
-[ ] 5. bd sync                 (commit any new beads changes)`
+[ ] 5. bd sync                 (commit any new beads, update issues.jsonl)`
 		closeNote = "**Note:** Push disabled via config. Run `git push` manually when ready."
 		syncSection = `### Sync & Collaboration
-- ` + "`bd sync`" + ` - Sync with git remote (run at session end)
+- ` + "`bd sync`" + ` - Commit beads and export to JSONL (run at session end)
 - ` + "`bd sync --status`" + ` - Check sync status without syncing`
 		completingWorkflow = `**Completing work:**
 ` + "```bash" + `
@@ -308,13 +316,13 @@ bd sync                     # Sync beads (push disabled)
 	} else {
 		closeProtocol = `[ ] 1. git status              (check what changed)
 [ ] 2. git add <files>         (stage code changes)
-[ ] 3. bd sync                 (commit beads changes)
+[ ] 3. bd sync                 (commit beads, update issues.jsonl)
 [ ] 4. git commit -m "..."     (commit code)
-[ ] 5. bd sync                 (commit any new beads changes)
+[ ] 5. bd sync                 (commit any new beads, update issues.jsonl)
 [ ] 6. git push                (push to remote)`
 		closeNote = "**NEVER skip this.** Work is not done until pushed."
 		syncSection = `### Sync & Collaboration
-- ` + "`bd sync`" + ` - Sync with git remote (run at session end)
+- ` + "`bd sync`" + ` - Commit beads and export to JSONL (run at session end)
 - ` + "`bd sync --status`" + ` - Check sync status without syncing`
 		completingWorkflow = `**Completing work:**
 ` + "```bash" + `
@@ -325,13 +333,14 @@ bd sync                     # Push to remote
 	}
 
 	redirectNotice := getRedirectNotice(true)
+	worktreeNotice := getWorktreeNotice()
 
 	context := `# Beads Workflow Context
 
 > **Context Recovery**: Run ` + "`bd prime`" + ` after compaction, clear, or new session
 > Hooks auto-call this in Claude Code when .beads/ detected
 
-` + redirectNotice + `# 🚨 SESSION CLOSE PROTOCOL 🚨
+` + redirectNotice + worktreeNotice + `# 🚨 SESSION CLOSE PROTOCOL 🚨
 
 **CRITICAL**: Before saying "done" or "complete", you MUST run this checklist:
 
@@ -347,7 +356,7 @@ bd sync                     # Push to remote
 - **Workflow**: Create beads issue BEFORE writing code, mark in_progress when starting
 - Persistence you don't need beats lost context
 - ` + gitWorkflowRule + `
-- Session management: check ` + "`bd ready`" + ` for available work
+- Session management: check ` + "`bd ready`" + ` or ` + "`bd ready --limit 0`" + ` for available work
 
 ## Essential Commands
 

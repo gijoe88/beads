@@ -44,6 +44,13 @@ With --stealth: configures per-repository git settings for invisible beads usage
   Perfect for personal use without affecting repo collaborators.
   To set up a specific AI tool, run: bd setup <claude|cursor|aider|...> --stealth
 
+Bootstrap from federation.remote:
+When federation.remote is configured in .beads/config.yaml, bd init automatically
+clones the Dolt database from that remote. To authenticate the clone, set:
+  DOLT_REMOTE_USER=username DOLT_REMOTE_PASSWORD=password bd init
+Or use --user with DOLT_REMOTE_PASSWORD env var. The credentials are stored
+so subsequent bd federation sync commands work without re-entering them.
+
 Beads requires a running dolt sql-server for database operations. If a server is detected
 on port 3307 or 3306, it is used automatically. Set connection details with --server-host,
 --server-port, and --server-user. Password should be set via BEADS_DOLT_PASSWORD
@@ -66,6 +73,7 @@ environment variable.`,
 		database, _ := cmd.Flags().GetString("database")
 		destroyToken, _ := cmd.Flags().GetString("destroy-token")
 		sharedServer, _ := cmd.Flags().GetBool("shared-server")
+		bootstrapUser, _ := cmd.Flags().GetString("user")
 
 		// Handle --backend flag: "dolt" is the only supported backend.
 		// "sqlite" is accepted for backward compatibility but prints a
@@ -382,22 +390,43 @@ environment variable.`,
 		if database != "" {
 			dbName = database
 		}
-		// Auto-bootstrap from git remote if sync.git-remote is configured.
-		// This enables the new-machine story: set sync.git-remote in config.yaml,
-		// run bd init, and the Dolt database is cloned from the git remote
-		// automatically — no manual dolt clone needed.
+		// Auto-bootstrap from git remote if sync.git-remote or federation.remote is configured.
+		// This enables the new-machine story: set federation.remote in config.yaml,
+		// run bd init, and the Dolt database is cloned automatically — no manual
+		// dolt clone needed.
 		gitRemoteURL := config.GetString("sync.git-remote")
+		if gitRemoteURL == "" {
+			// Fall back to federation.remote for HTTP Dolt remotes
+			gitRemoteURL = config.GetString("federation.remote")
+		}
+		// Use federation.name for the remote (default: "origin").
+		// Set to "central" or similar to prevent Dolt auto-push on commits.
+		remoteName := config.GetString("federation.name")
+
+		// Read bootstrap credentials from env vars (--user flag is fallback)
+		bootstrapUsername := os.Getenv("DOLT_REMOTE_USER")
+		if bootstrapUsername == "" {
+			bootstrapUsername = bootstrapUser
+		}
+		bootstrapPassword := os.Getenv("DOLT_REMOTE_PASSWORD")
+
 		bootstrappedFromRemote := false
+		bootstrapHadCredentials := false
 		if gitRemoteURL != "" {
-			cloned, bootstrapErr := dolt.BootstrapFromGitRemoteWithDB(ctx, storagePath, gitRemoteURL, dbName)
+			cloned, bootstrapErr := dolt.BootstrapFromGitRemoteWithCredentials(ctx, storagePath, gitRemoteURL, dbName, remoteName, bootstrapUsername, bootstrapPassword)
 			if bootstrapErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to bootstrap from git remote %s: %v\n", gitRemoteURL, bootstrapErr)
+				fmt.Fprintf(os.Stderr, "Warning: failed to bootstrap from remote %s: %v\n", gitRemoteURL, bootstrapErr)
 				fmt.Fprintf(os.Stderr, "  Continuing with fresh database initialization.\n")
 				// Non-fatal: fall through to normal init
 			} else if cloned {
 				bootstrappedFromRemote = true
+				bootstrapHadCredentials = bootstrapUsername != ""
 				if !quiet {
-					fmt.Printf("  %s Bootstrapped from git remote: %s\n", ui.RenderPass("✓"), gitRemoteURL)
+					peerName := remoteName
+					if peerName == "" {
+						peerName = "origin"
+					}
+					fmt.Printf("  %s Bootstrapped from remote: %s (peer: %s)\n", ui.RenderPass("✓"), gitRemoteURL, peerName)
 				}
 			}
 		}
@@ -430,6 +459,7 @@ environment variable.`,
 			ServerPort:      initPort,
 			CreateIfMissing: true, // bd init is the only path that should create databases
 			AutoStart:       os.Getenv("BEADS_DOLT_AUTO_START") != "0",
+			Remote:          remoteName, // Use federation.name for bd dolt push/pull
 		}
 		if serverHost != "" {
 			doltCfg.ServerHost = serverHost
@@ -451,18 +481,52 @@ environment variable.`,
 			panic(fmt.Sprintf("newDoltStore returned unexpected type %T", store))
 		}
 
+		// When bootstrapping from a remote Dolt database, the remote's _project_id
+		// may differ from the local metadata.json (which came from git). Read the
+		// database's _project_id and update metadata.json to match, preventing
+		// "PROJECT IDENTITY MISMATCH" errors on subsequent connections.
+		var remoteProjectID string
+		if bootstrappedFromRemote {
+			remoteProjectID, _ = store.GetMetadata(ctx, "_project_id")
+		}
+
 		// Configure the git remote in the Dolt store so bd dolt push/pull
 		// work immediately after bootstrap. Also add the remote when
 		// sync.git-remote is configured but bootstrap was skipped (DB already
 		// existed) — ensures the remote is always wired up.
+		// Use federation.name if set, otherwise "origin".
 		if gitRemoteURL != "" {
-			hasRemote, _ := store.HasRemote(ctx, "origin")
+			targetRemoteName := remoteName
+			if targetRemoteName == "" {
+				targetRemoteName = "origin"
+			}
+			hasRemote, _ := store.HasRemote(ctx, targetRemoteName)
 			if !hasRemote {
-				if err := store.AddRemote(ctx, "origin", gitRemoteURL); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to add git remote 'origin': %v\n", err)
-					// Non-fatal — user can add manually with: bd dolt remote add origin <url>
+				if err := store.AddRemote(ctx, targetRemoteName, gitRemoteURL); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to add git remote '%s': %v\n", targetRemoteName, err)
+					// Non-fatal — user can add manually with: bd dolt remote add %s <url>
 				} else if !quiet {
-					fmt.Printf("  %s Configured Dolt remote: origin → %s\n", ui.RenderPass("✓"), gitRemoteURL)
+					fmt.Printf("  %s Configured Dolt remote: %s → %s\n", ui.RenderPass("✓"), targetRemoteName, gitRemoteURL)
+				}
+			}
+
+			// Auto-register federation peer if bootstrap used credentials.
+			// This stores the credentials so subsequent bd federation sync works
+			// without needing manual bd federation add-peer.
+			if bootstrapHadCredentials {
+				sovereignty := config.GetString("federation.sovereignty")
+				peer := &storage.FederationPeer{
+					Name:        targetRemoteName,
+					RemoteURL:   gitRemoteURL,
+					Username:    bootstrapUsername,
+					Password:    bootstrapPassword,
+					Sovereignty: sovereignty,
+				}
+				if err := doltStore.AddFederationPeer(ctx, peer); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to auto-register federation peer '%s': %v\n", targetRemoteName, err)
+					// Non-fatal — user can add manually with: bd federation add-peer
+				} else if !quiet {
+					fmt.Printf("  %s Auto-registered federation peer: %s (user: %s)\n", ui.RenderPass("✓"), targetRemoteName, bootstrapUsername)
 				}
 			}
 		}
@@ -533,7 +597,11 @@ environment variable.`,
 			// Generate project identity UUID if not already set (GH#2372).
 			// This UUID is stored in both metadata.json and the database,
 			// and verified on every connection to detect cross-project leakage.
-			if cfg.ProjectID == "" {
+			// When bootstrapping from a remote, use the remote's _project_id
+			// to prevent "PROJECT IDENTITY MISMATCH" errors.
+			if remoteProjectID != "" {
+				cfg.ProjectID = remoteProjectID
+			} else if cfg.ProjectID == "" {
 				cfg.ProjectID = configfile.GenerateProjectID()
 			}
 
@@ -930,6 +998,7 @@ func init() {
 	initCmd.Flags().String("server-user", "", "Dolt server MySQL user (default: root)")
 	initCmd.Flags().String("database", "", "Use existing server database name (overrides prefix-based naming)")
 	initCmd.Flags().Bool("shared-server", false, "Enable shared Dolt server mode (all projects share one server at ~/.beads/shared-server/)")
+	initCmd.Flags().String("user", "", "Username for bootstrapping from federation.remote (DOLT_REMOTE_USER env takes precedence)")
 
 	rootCmd.AddCommand(initCmd)
 }

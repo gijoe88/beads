@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/configfile"
@@ -28,14 +29,25 @@ const staleLockAge = 5 * time.Minute
 //
 // Returns true if the clone was performed, false if skipped (dolt dir already exists).
 func BootstrapFromGitRemote(ctx context.Context, doltDir, gitRemoteURL string) (bool, error) {
-	return BootstrapFromGitRemoteWithDB(ctx, doltDir, gitRemoteURL, "")
+	return BootstrapFromGitRemoteWithDB(ctx, doltDir, gitRemoteURL, "", "")
 }
 
 // BootstrapFromGitRemoteWithDB is like BootstrapFromGitRemote but allows
 // specifying the database name (used by the embedded driver for the
-// subdirectory structure).
-func BootstrapFromGitRemoteWithDB(ctx context.Context, doltDir, gitRemoteURL, database string) (bool, error) {
-	// Skip if Dolt database already exists
+// subdirectory structure) and the remote name (default: "origin").
+func BootstrapFromGitRemoteWithDB(ctx context.Context, doltDir, gitRemoteURL, database, remoteName string) (bool, error) {
+	return BootstrapFromGitRemoteWithCredentials(ctx, doltDir, gitRemoteURL, database, remoteName, "", "")
+}
+
+// BootstrapCredentials holds authentication credentials for bootstrapping.
+type BootstrapCredentials struct {
+	Username string
+	Password string
+}
+
+// BootstrapFromGitRemoteWithCredentials clones a Dolt database with optional authentication.
+// If credentials are provided, they are passed to dolt clone via --user flag and DOLT_REMOTE_PASSWORD env.
+func BootstrapFromGitRemoteWithCredentials(ctx context.Context, doltDir, gitRemoteURL, database, remoteName, username, password string) (bool, error) {
 	if doltExists(doltDir) {
 		return false, nil
 	}
@@ -44,25 +56,41 @@ func BootstrapFromGitRemoteWithDB(ctx context.Context, doltDir, gitRemoteURL, da
 		database = configfile.DefaultDoltDatabase
 	}
 
-	// Verify dolt CLI is available
+	if remoteName == "" {
+		remoteName = "origin"
+	}
+
 	if _, err := exec.LookPath("dolt"); err != nil {
 		return false, fmt.Errorf("dolt CLI not found (required for git remote bootstrap): %w", err)
 	}
 
-	// Create the parent dolt directory
 	if err := os.MkdirAll(doltDir, 0o750); err != nil {
 		return false, fmt.Errorf("failed to create dolt directory: %w", err)
 	}
 
-	// Clone into <doltDir>/<database>/ so the embedded driver can find it.
-	// `dolt clone <url> <target>` creates <target>/.dolt/ directly.
 	cloneTarget := filepath.Join(doltDir, database)
-	cmd := exec.CommandContext(ctx, "dolt", "clone", gitRemoteURL, cloneTarget)
+	args := []string{"clone", "--remote", remoteName, gitRemoteURL, cloneTarget}
+	if username != "" {
+		args = append(args, "--user", username)
+	}
+	cmd := exec.CommandContext(ctx, "dolt", args...)
+
+	if password != "" {
+		env := make([]string, 0, len(os.Environ())+1)
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, "DOLT_REMOTE_PASSWORD=") {
+				env = append(env, e)
+			}
+		}
+		env = append(env, "DOLT_REMOTE_PASSWORD="+password)
+		cmd.Env = env
+	}
+
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return false, fmt.Errorf("dolt clone failed: %w\nOutput: %s", err, output)
 	}
 
-	fmt.Fprintf(os.Stderr, "Bootstrapped from git remote: %s\n", gitRemoteURL)
+	fmt.Fprintf(os.Stderr, "Bootstrapped from git remote: %s (remote: %s)\n", gitRemoteURL, remoteName)
 	return true, nil
 }
 

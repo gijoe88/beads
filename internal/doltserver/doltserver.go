@@ -863,6 +863,9 @@ const bdDoltMarker = ".bd-dolt-ok"
 
 // ensureDoltInit initializes a dolt database directory if .dolt/ doesn't exist.
 // If .dolt/ exists, seeds the .bd-dolt-ok marker for existing working databases.
+// When bootstrapping from a remote, the database may exist in a subdirectory
+// (e.g., .beads/dolt/<dbname>/.dolt/). In this case, skip init to avoid
+// creating a stray .dolt at the root level.
 // See GH#2137 for background on pre-0.56 database compatibility.
 func ensureDoltInit(doltDir string) error {
 	if err := os.MkdirAll(doltDir, 0750); err != nil {
@@ -883,6 +886,12 @@ func ensureDoltInit(doltDir string) error {
 		return nil // Already initialized
 	}
 
+	// Check for database subdirectories with .dolt (e.g., from bootstrap).
+	// If any exist, skip init to avoid creating a stray .dolt at root level.
+	if hasDatabaseSubdirectory(doltDir) {
+		return nil
+	}
+
 	cmd := exec.Command("dolt", "init")
 	cmd.Dir = doltDir
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -893,6 +902,27 @@ func ensureDoltInit(doltDir string) error {
 	_ = os.WriteFile(markerPath, []byte("ok\n"), 0600)
 
 	return nil
+}
+
+// hasDatabaseSubdirectory checks if any subdirectory of doltDir contains a .dolt
+// directory. This detects databases cloned by bootstrap (which create .dolt in
+// subdirectories like .beads/dolt/<dbname>/.dolt/).
+func hasDatabaseSubdirectory(doltDir string) bool {
+	entries, err := os.ReadDir(doltDir)
+	if err != nil {
+		return false
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		subDotDolt := filepath.Join(doltDir, entry.Name(), ".dolt")
+		if info, err := os.Stat(subDotDolt); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // RecoverPreV56DoltDir removes and reinitializes a dolt database that was

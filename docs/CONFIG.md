@@ -32,7 +32,8 @@ Tool-level settings you can configure:
 |---------|------|---------------------|---------|-------------|
 | `json` | `--json` | `BD_JSON` | `false` | Output in JSON format |
 | `no-push` | `--no-push` | `BD_NO_PUSH` | `false` | Skip pushing to remote in `bd dolt push` |
-| `federation.remote` | - | `BD_FEDERATION_REMOTE` | (none) | Dolt remote URL for federation |
+| `federation.remote` | - | `BD_FEDERATION_REMOTE` | (none) | Dolt remote URL for federation (auto-bootstrap on `bd init`) |
+| `federation.name` | - | `BD_FEDERATION_NAME` | `origin` | Dolt remote name (use non-`origin` like `central` to prevent auto-push) |
 | `federation.sovereignty` | - | `BD_FEDERATION_SOVEREIGNTY` | (none) | Data sovereignty tier: `T1`, `T2`, `T3`, `T4` |
 | `dolt.auto-commit` | `--dolt-auto-commit` | `BD_DOLT_AUTO_COMMIT` | `on` | (Dolt backend) Automatically create a Dolt commit after successful write commands |
 | `create.require-description` | - | `BD_CREATE_REQUIRE_DESCRIPTION` | `false` | Require description when creating issues |
@@ -162,12 +163,17 @@ Control when sync operations occur:
 
 #### Federation Configuration
 
-- `federation.remote`: Dolt remote URL (e.g., `dolthub://org/beads`, `gs://bucket/beads`, `s3://bucket/beads`)
+- `federation.remote`: Dolt remote URL (e.g., `dolthub://org/beads`, `gs://bucket/beads`, `s3://bucket/beads`, `http://host:8080/beads`)
+- `federation.name`: Dolt remote name (default: `origin`)
+  - Use a non-`origin` name like `central` to prevent Dolt from auto-pushing on every commit
+  - This gives you manual control over when syncs happen via `bd federation sync`
 - `federation.sovereignty`: Data sovereignty tier:
   - `T1`: Full sovereignty - data never leaves controlled infrastructure
   - `T2`: Regional sovereignty - data stays within region/jurisdiction
   - `T3`: Provider sovereignty - data with trusted cloud provider
   - `T4`: No restrictions - data can be anywhere
+
+**Auto-bootstrap:** When `federation.remote` is configured, `bd init` automatically clones the Dolt database from the remote using `federation.name` as the remote name. This simplifies onboarding for new contributors.
 
 #### Example Sync Configuration
 
@@ -180,6 +186,7 @@ sync:
 # Optional: Dolt federation
 federation:
   remote: dolthub://myorg/beads
+  name: central    # Use 'central' instead of 'origin' to prevent auto-push
   sovereignty: T2
 ```
 

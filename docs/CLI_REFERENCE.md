@@ -864,6 +864,86 @@ bd dolt push  # Force immediate sync, bypass debounce
 
 **ALWAYS run `bd dolt push` at end of agent sessions** to ensure changes are committed/pushed immediately.
 
+## Federation
+
+Peer-to-peer synchronization with remote Dolt servers. See [FEDERATION-SETUP.md](../FEDERATION-SETUP.md) for complete setup guide.
+
+### Adding Peers
+
+```bash
+# Add peer with password (prompts for password)
+bd federation add-peer <name> <endpoint> --user <username> -p -
+
+# Add peer with empty password (for passwordless servers)
+bd federation add-peer <name> <endpoint> --user <username> --password=""
+
+# Examples
+bd federation add-peer central dolthub://myorg/beads --user sync-bot -p -
+bd federation add-peer staging dolthub://myorg/staging-beads
+bd federation add-peer backup gs://mybucket/beads-backup
+```
+
+**Supported endpoints:**
+- `dolthub://org/repo` - DoltHub
+- `gs://bucket/path` - Google Cloud Storage
+- `s3://bucket/path` - Amazon S3
+- `file:///path/to/backup` - Local filesystem
+- `http://host:port/db` - HTTP remote server
+- `ssh://host/path` or `git@host:path` - SSH
+
+### Syncing
+
+```bash
+# Sync with a specific peer
+bd federation sync --peer central
+
+# Sync with conflict resolution
+bd federation sync --peer central --strategy ours     # Keep local changes
+bd federation sync --peer central --strategy theirs   # Keep remote changes
+```
+
+**Conflict strategies:**
+- `newest` (default) - Use version with most recent timestamp
+- `ours` - Always prefer local changes
+- `theirs` - Always prefer remote changes
+
+### Status
+
+```bash
+# Check specific peer
+bd federation status --peer central
+
+# Check all peers
+bd federation status
+
+# List peers
+bd federation list-peers --json
+```
+
+### Dolt Push/Pull with Remotes
+
+Push/pull to specific Dolt remotes:
+
+```bash
+# Push to specific remote
+bd dolt push origin main
+
+# Push and set upstream (first-time push)
+bd dolt push --set-upstream central main
+
+# Pull from specific remote
+bd dolt pull origin main
+
+# Force push (use with caution)
+bd dolt push --force origin main
+```
+
+**Server permissions required for HTTP federation:**
+- `CLONE_ADMIN` - For fetch/clone operations
+- `SuperUser` - For push operations (Dolt HTTP API requirement)
+
+See [FEDERATION-SETUP.md](../FEDERATION-SETUP.md) for server configuration details.
+
 ## Editor Integration
 
 ### Setup Commands

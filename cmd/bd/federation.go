@@ -124,7 +124,7 @@ func init() {
 
 	// Flags for add-peer (SQL user authentication)
 	federationAddPeerCmd.Flags().StringVarP(&federationUser, "user", "u", "", "SQL username for authentication")
-	federationAddPeerCmd.Flags().StringVarP(&federationPassword, "password", "p", "", "SQL password (prompted if --user set without --password)")
+	federationAddPeerCmd.Flags().StringVarP(&federationPassword, "password", "p", "", "SQL password (use '-' to prompt, empty string for no password)")
 	federationAddPeerCmd.Flags().StringVar(&federationSov, "sovereignty", "", "Sovereignty tier (T1, T2, T3, T4)")
 
 	rootCmd.AddCommand(federationCmd)
@@ -360,16 +360,17 @@ func runFederationAddPeer(cmd *cobra.Command, args []string) {
 	name := args[0]
 	url := args[1]
 
-	// If user is provided but password is not, prompt for it
 	password := federationPassword
-	if federationUser != "" && password == "" {
-		fmt.Fprint(os.Stderr, "Password: ")
-		pwBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr) // newline after password
-		if err != nil {
-			FatalErrorRespectJSON("failed to read password: %v", err)
+	if federationUser != "" {
+		if password == "-" {
+			fmt.Fprint(os.Stderr, "Password: ")
+			pwBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr) // newline after password
+			if err != nil {
+				FatalErrorRespectJSON("failed to read password: %v", err)
+			}
+			password = string(pwBytes)
 		}
-		password = string(pwBytes)
 	}
 
 	// Validate sovereignty tier if provided

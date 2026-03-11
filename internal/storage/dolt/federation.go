@@ -16,16 +16,23 @@ import (
 
 // PushTo pushes commits to a specific peer remote.
 // If credentials are stored for this peer, they are used automatically.
-// For git-protocol remotes, uses CLI `dolt push` to avoid MySQL connection timeouts.
+// Uses CLI path for git-protocol remotes OR when credentials exist (SQL path can't
+// access DOLT_REMOTE_PASSWORD env var since it runs in dolt server process).
 func (s *DoltStore) PushTo(ctx context.Context, peer string) error {
-	if s.isPeerGitProtocolRemote(ctx, peer) {
+	if s.shouldUseCLIForPeer(ctx, peer) {
 		return s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
 			return s.doltCLIPushToPeer(ctx, peer, creds)
 		})
 	}
 	return s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
 		return withEnvCredentials(creds, func() error {
-			if err := s.execWithLongTimeout(ctx, "CALL DOLT_PUSH(?, ?)", peer, s.branch); err != nil {
+			var err error
+			if creds != nil && creds.username != "" {
+				err = s.execWithLongTimeout(ctx, "CALL DOLT_PUSH('--user', ?, ?, ?)", creds.username, peer, s.branch)
+			} else {
+				err = s.execWithLongTimeout(ctx, "CALL DOLT_PUSH(?, ?)", peer, s.branch)
+			}
+			if err != nil {
 				return fmt.Errorf("failed to push to peer %s: %w", peer, err)
 			}
 			return nil
@@ -35,7 +42,8 @@ func (s *DoltStore) PushTo(ctx context.Context, peer string) error {
 
 // PullFrom pulls changes from a specific peer remote.
 // If credentials are stored for this peer, they are used automatically.
-// For git-protocol remotes, uses CLI `dolt pull` to avoid MySQL connection timeouts.
+// Uses CLI path for git-protocol remotes OR when credentials exist (SQL path can't
+// access DOLT_REMOTE_PASSWORD env var since it runs in dolt server process).
 // Returns any merge conflicts if present.
 func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Conflict, error) {
 	// GH#2474: Auto-commit pending changes before pull to prevent
@@ -49,7 +57,7 @@ func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Confli
 	}
 
 	var conflicts []storage.Conflict
-	if s.isPeerGitProtocolRemote(ctx, peer) {
+	if s.shouldUseCLIForPeer(ctx, peer) {
 		err := s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
 			if pullErr := s.doltCLIPullFromPeer(ctx, peer, creds); pullErr != nil {
 				c, conflictErr := s.GetConflicts(ctx)
@@ -65,7 +73,13 @@ func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Confli
 	}
 	err := s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
 		return withEnvCredentials(creds, func() error {
-			if pullErr := s.execWithLongTimeout(ctx, "CALL DOLT_PULL(?)", peer); pullErr != nil {
+			var pullErr error
+			if creds != nil && creds.username != "" {
+				pullErr = s.execWithLongTimeout(ctx, "CALL DOLT_PULL('--user', ?, ?)", creds.username, peer)
+			} else {
+				pullErr = s.execWithLongTimeout(ctx, "CALL DOLT_PULL(?)", peer)
+			}
+			if pullErr != nil {
 				c, conflictErr := s.GetConflicts(ctx)
 				if conflictErr == nil && len(c) > 0 {
 					conflicts = c
@@ -81,16 +95,23 @@ func (s *DoltStore) PullFrom(ctx context.Context, peer string) ([]storage.Confli
 
 // Fetch fetches refs from a peer without merging.
 // If credentials are stored for this peer, they are used automatically.
-// For git-protocol remotes, uses CLI `dolt fetch` to avoid MySQL connection timeouts.
+// Uses CLI path for git-protocol remotes OR when credentials exist (SQL path can't
+// access DOLT_REMOTE_PASSWORD env var since it runs in dolt server process).
 func (s *DoltStore) Fetch(ctx context.Context, peer string) error {
-	if s.isPeerGitProtocolRemote(ctx, peer) {
+	if s.shouldUseCLIForPeer(ctx, peer) {
 		return s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
 			return s.doltCLIFetchFromPeer(ctx, peer, creds)
 		})
 	}
 	return s.withPeerCredentials(ctx, peer, func(creds *remoteCredentials) error {
 		return withEnvCredentials(creds, func() error {
-			if err := s.execWithLongTimeout(ctx, "CALL DOLT_FETCH(?)", peer); err != nil {
+			var err error
+			if creds != nil && creds.username != "" {
+				err = s.execWithLongTimeout(ctx, "CALL DOLT_FETCH('--user', ?, ?)", creds.username, peer)
+			} else {
+				err = s.execWithLongTimeout(ctx, "CALL DOLT_FETCH(?)", peer)
+			}
+			if err != nil {
 				return fmt.Errorf("failed to fetch from peer %s: %w", peer, err)
 			}
 			return nil
@@ -132,21 +153,19 @@ func (s *DoltStore) SyncStatus(ctx context.Context, peer string) (*storage.SyncS
 		Peer: peer,
 	}
 
-	// Get ahead/behind counts by comparing refs
-	// This requires the peer to have been fetched first
-	query := `
+	remoteRef := fmt.Sprintf("%s/%s", peer, s.branch)
+
+	// #nosec G201 -- remoteRef is constructed from validated peer name and branch, not arbitrary user input
+	query := fmt.Sprintf(`
 		SELECT
 			(SELECT COUNT(*) FROM dolt_log WHERE commit_hash NOT IN
-				(SELECT commit_hash FROM dolt_log AS OF CONCAT(?, '/', ?))) as ahead,
-			(SELECT COUNT(*) FROM dolt_log AS OF CONCAT(?, '/', ?) WHERE commit_hash NOT IN
+				(SELECT commit_hash FROM dolt_log AS OF '%s')) as ahead,
+			(SELECT COUNT(*) FROM dolt_log AS OF '%s' WHERE commit_hash NOT IN
 				(SELECT commit_hash FROM dolt_log)) as behind
-	`
+	`, remoteRef, remoteRef)
 
-	err := s.db.QueryRowContext(ctx, query, peer, s.branch, peer, s.branch).
-		Scan(&status.LocalAhead, &status.LocalBehind)
+	err := s.db.QueryRowContext(ctx, query).Scan(&status.LocalAhead, &status.LocalBehind)
 	if err != nil {
-		// If we can't get the status, return a partial result
-		// This happens when the remote branch doesn't exist locally yet
 		status.LocalAhead = -1
 		status.LocalBehind = -1
 	}
@@ -282,19 +301,45 @@ func (s *DoltStore) isPeerGitProtocolRemote(ctx context.Context, peer string) bo
 			}
 		}
 	}
-	if s.cliDir() != "" {
-		if url := doltutil.FindCLIRemote(s.cliDir(), peer); url != "" {
-			return doltutil.IsGitProtocolURL(url)
-		}
+	return false
+}
+
+// peerHasCredentials returns true if the peer has stored credentials.
+// When credentials exist, we must use CLI path because SQL path cannot access
+// DOLT_REMOTE_PASSWORD env var (it runs in dolt server process, not client).
+func (s *DoltStore) peerHasCredentials(ctx context.Context, peerName string) bool {
+	peerData, err := s.GetFederationPeer(ctx, peerName)
+	if err != nil {
+		return false
+	}
+	return peerData != nil && (peerData.Username != "" || peerData.Password != "")
+}
+
+// shouldUseCLIForPeer returns true if federation operations should use CLI path.
+// CLI path is required when:
+// 1. URL is git-protocol (SSH, git+https://, git://), OR
+// 2. Credentials exist (SQL path can't access DOLT_REMOTE_PASSWORD env var)
+func (s *DoltStore) shouldUseCLIForPeer(ctx context.Context, peer string) bool {
+	if s.isPeerGitProtocolRemote(ctx, peer) {
+		return true
+	}
+	if s.peerHasCredentials(ctx, peer) {
+		return s.cliDir() != "" && doltutil.FindCLIRemote(s.cliDir(), peer) != ""
 	}
 	return false
 }
 
 // doltCLIPushToPeer shells out to `dolt push` for a specific peer remote.
 // Used for git-protocol remotes where CALL DOLT_PUSH times out through the SQL connection.
-// Credentials are set on the subprocess environment only via cmd.Env.
+// Credentials are passed via --user flag (required, env var DOLT_REMOTE_USER is ignored by dolt CLI)
+// and DOLT_REMOTE_PASSWORD env var.
 func (s *DoltStore) doltCLIPushToPeer(ctx context.Context, peer string, creds *remoteCredentials) error {
-	cmd := exec.CommandContext(ctx, "dolt", "push", peer, s.branch) // #nosec G204 -- fixed command with validated peer/branch
+	args := []string{"push"}
+	if creds != nil && creds.username != "" {
+		args = append(args, "--user", creds.username)
+	}
+	args = append(args, peer, s.branch)
+	cmd := exec.CommandContext(ctx, "dolt", args...) // #nosec G204 -- fixed command with validated peer/branch
 	cmd.Dir = s.cliDir()
 	creds.applyToCmd(cmd)
 	out, err := cmd.CombinedOutput()
@@ -306,9 +351,15 @@ func (s *DoltStore) doltCLIPushToPeer(ctx context.Context, peer string, creds *r
 
 // doltCLIPullFromPeer shells out to `dolt pull` for a specific peer remote.
 // Used for git-protocol remotes where CALL DOLT_PULL times out through the SQL connection.
-// Credentials are set on the subprocess environment only via cmd.Env.
+// Credentials are passed via --user flag (required, env var DOLT_REMOTE_USER is ignored by dolt CLI)
+// and DOLT_REMOTE_PASSWORD env var.
 func (s *DoltStore) doltCLIPullFromPeer(ctx context.Context, peer string, creds *remoteCredentials) error {
-	cmd := exec.CommandContext(ctx, "dolt", "pull", peer, s.branch) // #nosec G204 -- fixed command with validated peer/branch
+	args := []string{"pull"}
+	if creds != nil && creds.username != "" {
+		args = append(args, "--user", creds.username)
+	}
+	args = append(args, peer, s.branch)
+	cmd := exec.CommandContext(ctx, "dolt", args...) // #nosec G204 -- fixed command with validated peer/branch
 	cmd.Dir = s.cliDir()
 	creds.applyToCmd(cmd)
 	out, err := cmd.CombinedOutput()
@@ -320,9 +371,15 @@ func (s *DoltStore) doltCLIPullFromPeer(ctx context.Context, peer string, creds 
 
 // doltCLIFetchFromPeer shells out to `dolt fetch` for a specific peer remote.
 // Used for git-protocol remotes where CALL DOLT_FETCH times out through the SQL connection.
-// Credentials are set on the subprocess environment only via cmd.Env.
+// Credentials are passed via --user flag (required, env var DOLT_REMOTE_USER is ignored by dolt CLI)
+// and DOLT_REMOTE_PASSWORD env var.
 func (s *DoltStore) doltCLIFetchFromPeer(ctx context.Context, peer string, creds *remoteCredentials) error {
-	cmd := exec.CommandContext(ctx, "dolt", "fetch", peer) // #nosec G204 -- fixed command with validated peer
+	args := []string{"fetch"}
+	if creds != nil && creds.username != "" {
+		args = append(args, "--user", creds.username)
+	}
+	args = append(args, peer)
+	cmd := exec.CommandContext(ctx, "dolt", args...) // #nosec G204 -- fixed command with validated peer
 	cmd.Dir = s.cliDir()
 	creds.applyToCmd(cmd)
 	out, err := cmd.CombinedOutput()

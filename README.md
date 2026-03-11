@@ -36,6 +36,7 @@ echo "Use 'bd' for task tracking" >> AGENTS.md
 * **Compaction:** Semantic "memory decay" summarizes old closed tasks to save context window.
 * **Messaging:** Message issue type with threading (`--thread`), ephemeral lifecycle, and mail delegation.
 * **Graph Links:** `relates_to`, `duplicates`, `supersedes`, and `replies_to` for knowledge graphs.
+* **Federation:** Peer-to-peer sync between machines/teams with auto-bootstrap for new contributors.
 
 ## 📖 Essential Commands
 
@@ -46,6 +47,7 @@ echo "Use 'bd' for task tracking" >> AGENTS.md
 | `bd update <id> --claim` | Atomically claim a task (sets assignee + in_progress). |
 | `bd dep add <child> <parent>` | Link tasks (blocks, related, parent-child). |
 | `bd show <id>` | View task details and audit trail. |
+| `bd federation sync --peer central` | Sync with federation peer. |
 
 ## 🔗 Hierarchy & Workflow
 
@@ -76,5 +78,5 @@ See [docs/COMMUNITY_TOOLS.md](docs/COMMUNITY_TOOLS.md) for a curated list of com
 
 ## 📝 Documentation
 
-* [Installing](docs/INSTALLING.md) | [Agent Workflow](AGENT_INSTRUCTIONS.md) | [Copilot Setup](docs/COPILOT_INTEGRATION.md) | [Articles](ARTICLES.md) | [Sync Branch Mode](docs/PROTECTED_BRANCHES.md) | [Troubleshooting](docs/TROUBLESHOOTING.md) | [FAQ](docs/FAQ.md)
+* [Installing](docs/INSTALLING.md) | [Agent Workflow](AGENT_INSTRUCTIONS.md) | [Copilot Setup](docs/COPILOT_INTEGRATION.md) | [Articles](ARTICLES.md) | [Sync Branch Mode](docs/PROTECTED_BRANCHES.md) | [Federation](FEDERATION-SETUP.md) | [Troubleshooting](docs/TROUBLESHOOTING.md) | [FAQ](docs/FAQ.md)
 * [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/steveyegge/beads)

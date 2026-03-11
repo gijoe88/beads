@@ -384,23 +384,20 @@ func (c *remoteCredentials) empty() bool {
 	return c == nil || (c.username == "" && c.password == "")
 }
 
-// applyToCmd sets DOLT_REMOTE_USER/PASSWORD on the subprocess environment,
-// isolating credentials to this specific exec.Cmd. This avoids setting
-// process-wide env vars that could leak to concurrent goroutines.
+// applyToCmd sets DOLT_REMOTE_PASSWORD on the subprocess environment.
+// Note: DOLT_REMOTE_USER is NOT set because it is ignored by dolt CLI -
+// the --user flag must be passed directly to dolt commands instead.
+// This isolates credentials to this specific exec.Cmd, avoiding process-wide
+// env vars that could leak to concurrent goroutines.
 func (c *remoteCredentials) applyToCmd(cmd *exec.Cmd) {
 	if c.empty() {
 		return
 	}
-	// Start with current process env, filtering out any existing credential vars
-	// to prevent stale values from leaking into the subprocess.
-	env := make([]string, 0, len(os.Environ())+2)
+	env := make([]string, 0, len(os.Environ())+1)
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "DOLT_REMOTE_USER=") && !strings.HasPrefix(e, "DOLT_REMOTE_PASSWORD=") {
+		if !strings.HasPrefix(e, "DOLT_REMOTE_PASSWORD=") {
 			env = append(env, e)
 		}
-	}
-	if c.username != "" {
-		env = append(env, "DOLT_REMOTE_USER="+c.username)
 	}
 	if c.password != "" {
 		env = append(env, "DOLT_REMOTE_PASSWORD="+c.password)
@@ -408,21 +405,17 @@ func (c *remoteCredentials) applyToCmd(cmd *exec.Cmd) {
 	cmd.Env = env
 }
 
-// setFederationCredentials sets DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD env vars.
+// setFederationCredentials sets DOLT_REMOTE_PASSWORD env var for SQL-path operations.
+// Note: DOLT_REMOTE_USER is NOT set because it is ignored by dolt CLI and may not be
+// used by SQL-path HTTP operations either. SQL procedures should pass --user explicitly.
 // Returns a cleanup function that must be called (typically via defer) to unset them.
 // The caller must hold federationEnvMutex.
-// Only used for SQL-path operations where the in-process Dolt server reads from
-// the process environment. CLI operations should use remoteCredentials.applyToCmd instead.
 func setFederationCredentials(username, password string) func() {
-	if username != "" {
-		_ = os.Setenv("DOLT_REMOTE_USER", username) // Best effort: Setenv failure is extremely rare in practice
-	}
 	if password != "" {
-		_ = os.Setenv("DOLT_REMOTE_PASSWORD", password) // Best effort: Setenv failure is extremely rare in practice
+		_ = os.Setenv("DOLT_REMOTE_PASSWORD", password)
 	}
 	return func() {
-		_ = os.Unsetenv("DOLT_REMOTE_USER")     // Best effort cleanup of auth env vars
-		_ = os.Unsetenv("DOLT_REMOTE_PASSWORD") // Best effort cleanup of auth env vars
+		_ = os.Unsetenv("DOLT_REMOTE_PASSWORD")
 	}
 }
 
@@ -459,11 +452,6 @@ func (s *DoltStore) withPeerCredentials(ctx context.Context, peerName string, fn
 	}
 
 	err = fn(creds)
-
-	// Update last sync time on success
-	if err == nil && peer != nil {
-		_ = s.updatePeerLastSync(ctx, peerName) // Best effort: peer sync timestamp is advisory
-	}
 
 	return err
 }

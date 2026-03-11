@@ -11,6 +11,7 @@ Common issues and solutions for bd users.
   - [Circuit breaker: "server appears down, failing fast"](#circuit-breaker-server-appears-down-failing-fast)
   - [Connection failures after upgrading from pre-Dolt versions](#connection-failures-after-upgrading-from-pre-dolt-versions)
 - [Git and Sync Issues](#git-and-sync-issues)
+- [Federation Issues](#federation-issues)
 - [Ready Work and Dependencies](#ready-work-and-dependencies)
 - [Performance Issues](#performance-issues)
 - [Agent-Specific Issues](#agent-specific-issues)
@@ -662,6 +663,107 @@ bd dolt pull
 # Check sync configuration
 bd config get sync.mode
 ```
+
+## Federation Issues
+
+### "API Authorization Failure: CLONE_ADMIN access"
+
+The remote Dolt server requires CLONE_ADMIN privilege for fetch/clone operations.
+
+**Fix:** Grant CLONE_ADMIN to the user on the remote server:
+```sql
+GRANT CLONE_ADMIN ON *.* TO 'beads'@'%';
+```
+
+### "API Authorization Failure: SuperUser access"
+
+The remote Dolt server requires SuperUser privilege for push operations via HTTP API.
+
+**Fix:** Grant SuperUser to the user on the remote server:
+```sql
+GRANT SuperUser ON *.* TO 'beads'@'%';
+```
+
+**Why SuperUser?** Dolt's HTTP remote API requires SuperUser for push operations (GetUploadLocations, AddTableFiles, Commit). This is a Dolt design limitation - no intermediate "push-only" privilege exists.
+
+### "merge failed: local changes would be stomped by merge"
+
+Local uncommitted changes in Dolt conflict with the incoming merge.
+
+**Fix:**
+```bash
+# Option 1: Commit local changes first, then retry sync
+bd vc commit -m "Local changes"
+
+# Option 2: Use conflict resolution strategy
+bd federation sync --peer central --strategy ours
+```
+
+### "merge failed: no common ancestor"
+
+The local and remote databases have unrelated histories. This typically happens when:
+- Two separate Dolt repositories existed independently
+- The database name in `metadata.json` doesn't match the actual folder
+
+**Diagnosis:**
+```bash
+# Check database name matches folder
+cat .beads/metadata.json | grep dolt_database
+ls .beads/dolt/
+
+# Check Dolt remotes
+cd .beads/dolt/<dbname>
+dolt remote -v
+```
+
+**Fix:**
+1. Ensure folder name matches `dolt_database` in `metadata.json`
+2. If needed, force push from SQL server:
+   ```bash
+   mysql -h 127.0.0.1 -P <port> -u root <dbname> -e "CALL DOLT_PUSH('--force', 'central', 'main');"
+   ```
+3. Re-add federation peer credentials
+
+### "SyncStatus shows 'not fetched yet'" after successful sync
+
+The status query uses Dolt's `AS OF` clause which had parameter binding issues in older versions.
+
+**Fix:** Upgrade to the latest beads version.
+
+### "no store available" when running federation commands
+
+Federation commands were incorrectly classified as not needing database access.
+
+**Fix:** Upgrade to the latest beads version where federation subcommands are properly handled.
+
+### Federation credentials not working with dolt CLI
+
+The `DOLT_REMOTE_USER` environment variable is **not used** by dolt CLI.
+
+**Fix:** Use the `--user` flag with dolt commands:
+```bash
+# Correct
+DOLT_REMOTE_PASSWORD=xxx dolt push --user beads central main
+
+# Incorrect (DOLT_REMOTE_USER is ignored)
+DOLT_REMOTE_USER=beads DOLT_REMOTE_PASSWORD=xxx dolt push central main
+```
+
+When using `bd federation` commands, beads handles this automatically.
+
+### Bootstrapping fails on new machine
+
+If `bd init` doesn't clone from the federation remote:
+
+1. Verify `federation.remote` is set in `.beads/config.yaml`
+2. Check the remote server is reachable:
+   ```bash
+   curl -v http://<host>:8080/
+   ```
+3. Ensure credentials are configured:
+   ```bash
+   bd federation add-peer central --user beads -p -
+   ```
 
 ## Ready Work and Dependencies
 

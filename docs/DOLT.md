@@ -84,7 +84,7 @@ Federation enables direct sync between Dolt installations without a central hub.
 
 ```
 ┌─────────────────┐         ┌─────────────────┐
-│   Gas Town A    │◄───────►│   Gas Town B    │
+│   Machine A     │◄───────►│   Machine B     │
 │  dolt sql-server│  sync   │  dolt sql-server│
 │  :3306 (sql)    │         │  :3306 (sql)    │
 │  :8080 (remote) │         │  :8080 (remote) │
@@ -95,23 +95,78 @@ In federation mode, the server exposes two ports:
 - **MySQL (3306)**: Multi-writer SQL access
 - **remotesapi (8080)**: Peer-to-peer push/pull
 
+### Configuration
+
+Add to `.beads/config.yaml`:
+
+```yaml
+federation:
+  remote: dolthub://myorg/beads   # Or http://dolt-server:8080/beads
+  name: central                   # Remote name (prevents auto-push)
+```
+
+**Why use a non-`origin` name?**
+Using `federation.name: central` (instead of the default `origin`) prevents Dolt
+from auto-pushing on every commit. This gives you manual control over sync timing.
+
 ### Quick Start
 
 ```bash
 # Add a peer
-bd federation add-peer town-beta 192.168.1.100:8080/beads
+bd federation add-peer central 192.168.1.100:8080/beads
 
-# With authentication
-bd federation add-peer town-beta host:8080/beads --user sync-bot
+# With authentication (prompts for password)
+bd federation add-peer central host:8080/beads --user sync-bot -p -
 
-# Sync with all peers
-bd federation sync
+# With empty password (for passwordless servers)
+bd federation add-peer central host:8080/beads --user root --password=""
+
+# Sync with a specific peer
+bd federation sync --peer central
 
 # Handle conflicts
-bd federation sync --strategy theirs  # or 'ours'
+bd federation sync --peer central --strategy theirs  # or 'ours'
 
 # Check status
-bd federation status
+bd federation status --peer central
+```
+
+### Sync Commands
+
+```bash
+# Bidirectional sync (fetch + merge + push)
+bd federation sync --peer central
+
+# Sync with conflict strategy
+bd federation sync --peer central --strategy ours      # Keep local changes
+bd federation sync --peer central --strategy theirs    # Keep remote changes
+
+# Check sync status
+bd federation status --peer central
+```
+
+### Auto-Bootstrap on Clone
+
+When a contributor clones your project, `bd init` automatically bootstraps
+from the configured `federation.remote`:
+
+```bash
+# On contributor's machine:
+git clone <project-url> my-project
+cd my-project
+
+# Provide credentials during init - peer is auto-registered
+DOLT_REMOTE_USER=beads DOLT_REMOTE_PASSWORD=<password> bd init --prefix myproj
+
+# Sync and start working (no add-peer needed!)
+bd federation sync --peer central
+```
+
+If you don't provide credentials during `bd init`, you'll need to add the peer manually:
+```bash
+bd init --prefix myproj
+bd federation add-peer central --user beads -p -
+bd federation sync --peer central
 ```
 
 ### Topologies
@@ -124,13 +179,31 @@ bd federation status
 
 ### Credentials
 
-Peer credentials are AES-256 encrypted, stored locally, and used automatically during sync:
+Peer credentials are AES-256-GCM encrypted, stored locally, and used automatically during sync:
 
 ```bash
 # Credentials prompted interactively
-bd federation add-peer name url --user admin
+bd federation add-peer central url --user admin -p -
+
+# Empty password explicitly
+bd federation add-peer central url --user root --password=""
 
 # Stored in federation_peers table (encrypted)
+```
+
+**Important authentication note:**
+The `DOLT_REMOTE_USER` environment variable is **not used** by dolt CLI.
+Use the `--user` flag instead. Beads handles this automatically when credentials
+are stored via `bd federation add-peer`.
+
+### Server Permissions
+
+For HTTP federation, the remote Dolt server requires specific grants:
+
+```sql
+CREATE USER 'beads'@'%' IDENTIFIED BY '<password>';
+GRANT CLONE_ADMIN ON *.* TO 'beads'@'%';  -- For fetch/clone
+GRANT SuperUser ON *.* TO 'beads'@'%';    -- For push (required by Dolt HTTP API)
 ```
 
 ### Troubleshooting
@@ -140,8 +213,22 @@ bd federation add-peer name url --user admin
 bd doctor --deep
 
 # Verify peer connectivity
-bd federation status
+bd federation status --peer central
+
+# Check server logs
+tail -f .beads/dolt/sql-server.log
 ```
+
+**Common issues:**
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "CLONE_ADMIN access denied" | Missing CLONE_ADMIN grant | `GRANT CLONE_ADMIN ON *.* TO 'user'@'%';` |
+| "SuperUser access denied" | Missing SuperUser grant | `GRANT SuperUser ON *.* TO 'user'@'%';` |
+| "local changes would be stomped" | Uncommitted changes | Commit first or use `--strategy ours` |
+| "no common ancestor" | Unrelated database histories | See [FEDERATION-SETUP.md](../FEDERATION-SETUP.md) |
+
+See [FEDERATION-SETUP.md](../FEDERATION-SETUP.md) for complete setup guide.
 
 ## Contributor Onboarding (Clone Bootstrap)
 

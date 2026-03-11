@@ -134,7 +134,7 @@ func isRemoteNotFoundErr(err error) bool {
 }
 
 var doltPushCmd = &cobra.Command{
-	Use:   "push",
+	Use:   "push [remote] [branch]",
 	Short: "Push commits to Dolt remote",
 	Long: `Push local Dolt commits to the configured remote.
 
@@ -143,7 +143,16 @@ For Hosted Dolt, set DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD environment
 variables for authentication.
 
 Use --force to overwrite remote changes (e.g., when the remote has
-uncommitted changes in its working set).`,
+uncommitted changes in its working set).
+
+Use --set-upstream to set the remote branch as the upstream for tracking.
+
+Optionally specify remote (and optionally branch) to push to a specific remote:
+  bd dolt push origin          # push to origin/main
+  bd dolt push origin main     # push to origin/main
+  bd dolt push central main --force
+  bd dolt push central main --set-upstream`,
+	Args: cobra.MaximumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
 		st := getStore()
@@ -152,17 +161,43 @@ uncommitted changes in its working set).`,
 			os.Exit(1)
 		}
 		force, _ := cmd.Flags().GetBool("force")
-		fmt.Println("Pushing to Dolt remote...")
-		if force {
-			if err := st.ForcePush(ctx); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				if isRemoteNotFoundErr(err) {
-					fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+		setUpstream, _ := cmd.Flags().GetBool("set-upstream")
+
+		if len(args) == 0 {
+			// No args: use configured remote and branch
+			fmt.Println("Pushing to Dolt remote...")
+			if force {
+				if err := st.ForcePush(ctx); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					if isRemoteNotFoundErr(err) {
+						fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+					}
+					os.Exit(1)
 				}
-				os.Exit(1)
+			} else {
+				if err := st.Push(ctx); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					if isRemoteNotFoundErr(err) {
+						fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+					}
+					os.Exit(1)
+				}
 			}
 		} else {
-			if err := st.Push(ctx); err != nil {
+			// Remote specified, branch defaults to "main"
+			remote := args[0]
+			branch := "main"
+			if len(args) >= 2 {
+				branch = args[1]
+			}
+			fmt.Printf("Pushing to %s/%s...\n", remote, branch)
+			var err error
+			if force {
+				err = st.ForcePushToRemote(ctx, remote, branch)
+			} else {
+				err = st.PushToRemote(ctx, remote, branch, setUpstream)
+			}
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				if isRemoteNotFoundErr(err) {
 					fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
@@ -175,13 +210,19 @@ uncommitted changes in its working set).`,
 }
 
 var doltPullCmd = &cobra.Command{
-	Use:   "pull",
+	Use:   "pull [remote] [branch]",
 	Short: "Pull commits from Dolt remote",
 	Long: `Pull commits from the configured Dolt remote into the local database.
 
 Requires a Dolt remote to be configured in the database directory.
 For Hosted Dolt, set DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD environment
-variables for authentication.`,
+variables for authentication.
+
+Optionally specify remote (and optionally branch) to pull from a specific remote:
+  bd dolt pull origin          # pull from origin/main
+  bd dolt pull origin main     # pull from origin/main
+  bd dolt pull central main`,
+	Args: cobra.MaximumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		ctx := context.Background()
 		st := getStore()
@@ -189,13 +230,32 @@ variables for authentication.`,
 			fmt.Fprintf(os.Stderr, "Error: no store available\n")
 			os.Exit(1)
 		}
-		fmt.Println("Pulling from Dolt remote...")
-		if err := st.Pull(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			if isRemoteNotFoundErr(err) {
-				fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+
+		if len(args) == 0 {
+			// No args: use configured remote and branch
+			fmt.Println("Pulling from Dolt remote...")
+			if err := st.Pull(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				if isRemoteNotFoundErr(err) {
+					fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+				}
+				os.Exit(1)
 			}
-			os.Exit(1)
+		} else {
+			// Remote specified, branch defaults to "main"
+			remote := args[0]
+			branch := "main"
+			if len(args) >= 2 {
+				branch = args[1]
+			}
+			fmt.Printf("Pulling from %s/%s...\n", remote, branch)
+			if err := st.PullFromRemote(ctx, remote, branch); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				if isRemoteNotFoundErr(err) {
+					fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+				}
+				os.Exit(1)
+			}
 		}
 		fmt.Println("Pull complete.")
 	},
@@ -840,6 +900,7 @@ func init() {
 	doltSetCmd.Flags().Bool("update-config", false, "Also write to config.yaml for team-wide defaults")
 	doltStopCmd.Flags().Bool("force", false, "Force stop the server")
 	doltPushCmd.Flags().Bool("force", false, "Force push (overwrite remote changes)")
+	doltPushCmd.Flags().Bool("set-upstream", false, "Set upstream for the branch")
 	doltCommitCmd.Flags().StringP("message", "m", "", "Commit message (default: auto-generated)")
 	doltCleanDatabasesCmd.Flags().Bool("dry-run", false, "Show what would be dropped without dropping")
 	doltRemoteRemoveCmd.Flags().Bool("force", false, "Force remove even when SQL and CLI URLs conflict")

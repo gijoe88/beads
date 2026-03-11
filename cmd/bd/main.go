@@ -373,11 +373,17 @@ var rootCmd = &cobra.Command{
 				// GH#2042: dolt push/pull/commit need the store — fall through to init
 			} else if slices.Contains(needsStoreDoltGrandchildren, parentName) {
 				// GH#2224: dolt remote add/list/remove need the store — fall through to init
+			} else if parentName == "federation" {
+				// Federation subcommands (sync, status, add-peer, etc.) need the store
 			} else if slices.Contains(noDbCommands, parentName) {
 				return
 			}
 		}
-		if slices.Contains(noDbCommands, cmdName) {
+		parentName := ""
+		if cmd.Parent() != nil {
+			parentName = cmd.Parent().Name()
+		}
+		if slices.Contains(noDbCommands, cmdName) && parentName != "federation" {
 			return
 		}
 

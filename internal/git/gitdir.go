@@ -289,6 +289,34 @@ func ResetCaches() {
 	gitCtx = gitContext{}
 }
 
+// IsMainRepoBare returns true if the main repository is a bare repository.
+// This is used to detect the "bare repo worktree pattern" where:
+//   - project/.bare/ is a bare git repo
+//   - project/.git is a file pointing to .bare
+//   - project/main/ is a worktree for the main branch
+//   - EVERY branch is a worktree, including main
+//
+// In this pattern, GetMainRepoRoot() returns the project root (parent of .bare),
+// but that directory has no working tree - git operations fail there.
+// The worktrees (e.g., project/main/) are normal working trees where .beads can live.
+func IsMainRepoBare() bool {
+	ctx, err := getGitContext()
+	if err != nil {
+		return false
+	}
+	mainRepoRoot := ctx.repoRoot
+	if ctx.isWorktree {
+		mainRepoRoot = filepath.Dir(ctx.commonDir)
+	}
+	cmd := exec.Command("git", "rev-parse", "--is-bare-repository")
+	cmd.Dir = mainRepoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(output)) == "true"
+}
+
 // IsJujutsuRepo returns true if the current directory is in a jujutsu (jj) repository.
 // Jujutsu stores its data in a .jj directory at the repository root.
 func IsJujutsuRepo() bool {

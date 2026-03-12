@@ -1341,6 +1341,99 @@ func TestInitBEADS_DIR(t *testing.T) {
 		}
 	})
 
+	// Bare repo worktree pattern: project/.bare/ is a bare repo, all branches are worktrees
+	// https://gabri.me/blog/git-worktrees-done-right
+	t.Run("BareRepoWorktreePattern", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Skipping worktree test on Windows")
+		}
+
+		resetBeadsDirState(t)
+
+		tmpDir := t.TempDir()
+		projectDir := filepath.Join(tmpDir, "myproject")
+
+		runGit := func(dir string, args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+			}
+		}
+
+		// Create bare repo worktree pattern:
+		// project/
+		// ├── .bare/        # bare git repo
+		// ├── .git          # FILE pointing to .bare
+		// └── main/         # worktree for main branch
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("Failed to create project dir: %v", err)
+		}
+
+		// Initialize bare repo
+		runGit(projectDir, "init", "--bare", ".bare")
+		runGit(projectDir, "config", "user.email", "test@test.com")
+		runGit(projectDir, "config", "user.name", "Test")
+
+		// Create .git file pointing to .bare
+		gitFile := filepath.Join(projectDir, ".git")
+		gitFileContent := "gitdir: .bare"
+		if err := os.WriteFile(gitFile, []byte(gitFileContent), 0644); err != nil {
+			t.Fatalf("Failed to create .git file: %v", err)
+		}
+
+		// Create main branch worktree
+		mainWorktree := filepath.Join(projectDir, "main")
+		runGit(projectDir, "worktree", "add", "main", "-b", "main")
+
+		// Verify the setup: main should be a worktree
+		cmd := exec.Command("git", "rev-parse", "--is-bare-repository")
+		cmd.Dir = mainWorktree
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("Failed to check if main worktree is bare: %v", err)
+		}
+		if strings.TrimSpace(string(out)) != "false" {
+			t.Fatalf("Expected main worktree to not be bare, got: %s", out)
+		}
+
+		// Verify IsWorktree returns true for main
+		git.ResetCaches()
+		t.Chdir(mainWorktree)
+		if !git.IsWorktree() {
+			t.Fatal("Expected IsWorktree() to return true for main worktree in bare repo pattern")
+		}
+
+		// Verify IsMainRepoBare returns true
+		if !git.IsMainRepoBare() {
+			t.Fatal("Expected IsMainRepoBare() to return true for bare repo pattern")
+		}
+
+		// Now test that bd init succeeds from main worktree
+		beads.ResetCaches()
+		git.ResetCaches()
+
+		rootCmd.SetArgs([]string{"init", "--prefix", "bare-wt", "--skip-hooks", "--quiet"})
+		err = rootCmd.Execute()
+		if err != nil {
+			t.Fatalf("bd init should succeed from worktree in bare repo pattern, got: %v", err)
+		}
+
+		// Verify .beads was created in the worktree
+		beadsInWorktree := filepath.Join(mainWorktree, ".beads")
+		if _, statErr := os.Stat(beadsInWorktree); os.IsNotExist(statErr) {
+			t.Errorf(".beads should be created in worktree: %s", beadsInWorktree)
+		}
+
+		// Verify database is accessible
+		expectedDBPath := filepath.Join(beadsInWorktree, "dolt")
+		if _, statErr := os.Stat(expectedDBPath); os.IsNotExist(statErr) {
+			t.Errorf("Dolt database was not created at: %s", expectedDBPath)
+		}
+	})
+
 	// Precedence: BEADS_DB > BEADS_DIR
 	t.Run("BEADS_DB_OverridesBeadsDir", func(t *testing.T) {
 		t.Skip("BEADS_DB env var does not control Dolt store location; Dolt always uses .beads/dolt/")

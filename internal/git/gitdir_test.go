@@ -139,3 +139,70 @@ func TestGetGitHooksDirTildeExpansion(t *testing.T) {
 		})
 	}
 }
+
+func TestIsMainRepoBare(t *testing.T) {
+	t.Run("returns false for regular repo", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		repoPath := filepath.Join(tmpDir, "regular-repo")
+		if err := os.MkdirAll(repoPath, 0750); err != nil {
+			t.Fatalf("Failed to create test repo directory: %v", err)
+		}
+		cmd := exec.Command("git", "init")
+		cmd.Dir = repoPath
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("Failed to init git repo: %v\nOutput: %s", err, string(output))
+		}
+
+		ResetCaches()
+		origDir, _ := os.Getwd()
+		defer os.Chdir(origDir)
+		os.Chdir(repoPath)
+
+		if IsMainRepoBare() {
+			t.Error("Expected IsMainRepoBare() to return false for regular repo")
+		}
+	})
+
+	t.Run("returns true for worktree in bare repo pattern", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		projectDir := filepath.Join(tmpDir, "project")
+
+		runGit := func(dir string, args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+			}
+		}
+
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("Failed to create project dir: %v", err)
+		}
+
+		runGit(projectDir, "init", "--bare", ".bare")
+
+		gitFile := filepath.Join(projectDir, ".git")
+		if err := os.WriteFile(gitFile, []byte("gitdir: .bare"), 0644); err != nil {
+			t.Fatalf("Failed to create .git file: %v", err)
+		}
+
+		runGit(projectDir, "config", "user.email", "test@test.com")
+		runGit(projectDir, "config", "user.name", "Test")
+
+		runGit(projectDir, "worktree", "add", "main", "-b", "main")
+
+		ResetCaches()
+		origDir, _ := os.Getwd()
+		defer os.Chdir(origDir)
+		os.Chdir(filepath.Join(projectDir, "main"))
+
+		if !IsWorktree() {
+			t.Error("Expected IsWorktree() to return true for worktree in bare repo pattern")
+		}
+		if !IsMainRepoBare() {
+			t.Error("Expected IsMainRepoBare() to return true for worktree in bare repo pattern")
+		}
+	})
+}

@@ -249,22 +249,30 @@ environment variable.`,
 
 		// Prevent initialization from within a worktree (unless BEADS_DIR is
 		// explicitly set, which means the caller already knows where to init)
+		// EXCEPTION: bare repo worktree pattern - every branch is a worktree,
+		// so we allow init from any worktree in that case.
 		if isWorktree && !hasExplicitBeadsDir {
-			mainRepoRoot, err := git.GetMainRepoRoot()
-			if err != nil {
-				FatalError("failed to get main repository root: %v", err)
-			}
+			if git.IsMainRepoBare() {
+				// Bare repo pattern - allow init from any worktree.
+				// .beads will be created in this worktree's root.
+			} else {
+				// Traditional worktree - block as before
+				mainRepoRoot, err := git.GetMainRepoRoot()
+				if err != nil {
+					FatalError("failed to get main repository root: %v", err)
+				}
 
-			fmt.Fprintf(os.Stderr, "Error: cannot run 'bd init' from within a git worktree\n\n")
-			fmt.Fprintf(os.Stderr, "Git worktrees share the .beads database from the main repository.\n")
-			fmt.Fprintf(os.Stderr, "To fix this:\n\n")
-			fmt.Fprintf(os.Stderr, "  1. Initialize beads in the main repository:\n")
-			fmt.Fprintf(os.Stderr, "     cd %s\n", mainRepoRoot)
-			fmt.Fprintf(os.Stderr, "     bd init\n\n")
-			fmt.Fprintf(os.Stderr, "  2. Then create worktrees with beads support:\n")
-			fmt.Fprintf(os.Stderr, "     bd worktree create <path> --branch <branch-name>\n\n")
-			fmt.Fprintf(os.Stderr, "For more information, see: https://github.com/steveyegge/beads/blob/main/docs/WORKTREES.md\n")
-			os.Exit(1)
+				fmt.Fprintf(os.Stderr, "Error: cannot run 'bd init' from within a git worktree\n\n")
+				fmt.Fprintf(os.Stderr, "Git worktrees share the .beads database from the main repository.\n")
+				fmt.Fprintf(os.Stderr, "To fix this:\n\n")
+				fmt.Fprintf(os.Stderr, "  1. Initialize beads in the main repository:\n")
+				fmt.Fprintf(os.Stderr, "     cd %s\n", mainRepoRoot)
+				fmt.Fprintf(os.Stderr, "     bd init\n\n")
+				fmt.Fprintf(os.Stderr, "  2. Then create worktrees with beads support:\n")
+				fmt.Fprintf(os.Stderr, "     bd worktree create <path> --branch <branch-name>\n\n")
+				fmt.Fprintf(os.Stderr, "For more information, see: https://github.com/steveyegge/beads/blob/main/docs/WORKTREES.md\n")
+				os.Exit(1)
+			}
 		}
 
 		// Use the beadsDir computed earlier (before any directory creation)

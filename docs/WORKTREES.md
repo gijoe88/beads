@@ -103,6 +103,29 @@ For complete sync-branch documentation, see [PROTECTED_BRANCHES.md](PROTECTED_BR
 
 ## How It Works
 
+### Bare Repo Worktree Pattern
+
+The "bare repo worktree pattern" (popularized by [this guide](https://gabri.me/blog/git-worktrees-done-right)) configures worktrees differently:
+
+```
+project/
+├── .bare/            # bare git repo
+├── .git              # FILE pointing to .bare
+├── main/             # worktree for main branch
+│   └── .beads/       # beads database lives here
+└── feature/          # worktree for feature branch
+```
+
+In this setup, **every branch (including main) is a worktree**. There is no traditional "main repository" with working files.
+
+**bd supports this pattern automatically:**
+
+1. `bd init` from any worktree (e.g., `project/main/`) works normally
+2. `.beads` is created in that worktree's root
+3. Other worktrees use redirect files to find the database
+
+This pattern is increasingly popular for AI coding agents (Claude Code, Cursor) because it provides clean isolation between branches.
+
 ### Shared Database Architecture
 
 ```

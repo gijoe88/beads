@@ -164,13 +164,14 @@ Optionally specify remote (and optionally branch) to push to a specific remote:
 		setUpstream, _ := cmd.Flags().GetBool("set-upstream")
 
 		if len(args) == 0 {
-			// No args: use configured remote and branch
 			fmt.Println("Pushing to Dolt remote...")
 			if force {
 				if err := st.ForcePush(ctx); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					if isRemoteNotFoundErr(err) {
-						fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+						fmt.Fprintf(os.Stderr, "Hint: use 'bd dolt remote add <name> <url>' (not 'dolt remote add').\n")
+						fmt.Fprintf(os.Stderr, "  Running 'dolt remote add' directly may add the remote to the wrong directory.\n")
+						fmt.Fprintf(os.Stderr, "  Use 'bd dolt remote list' to check for discrepancies.\n")
 					}
 					os.Exit(1)
 				}
@@ -178,13 +179,14 @@ Optionally specify remote (and optionally branch) to push to a specific remote:
 				if err := st.Push(ctx); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					if isRemoteNotFoundErr(err) {
-						fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+						fmt.Fprintf(os.Stderr, "Hint: use 'bd dolt remote add <name> <url>' (not 'dolt remote add').\n")
+						fmt.Fprintf(os.Stderr, "  Running 'dolt remote add' directly may add the remote to the wrong directory.\n")
+						fmt.Fprintf(os.Stderr, "  Use 'bd dolt remote list' to check for discrepancies.\n")
 					}
 					os.Exit(1)
 				}
 			}
 		} else {
-			// Remote specified, branch defaults to "main"
 			remote := args[0]
 			branch := "main"
 			if len(args) >= 2 {
@@ -200,7 +202,9 @@ Optionally specify remote (and optionally branch) to push to a specific remote:
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				if isRemoteNotFoundErr(err) {
-					fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+					fmt.Fprintf(os.Stderr, "Hint: use 'bd dolt remote add <name> <url>' (not 'dolt remote add').\n")
+					fmt.Fprintf(os.Stderr, "  Running 'dolt remote add' directly may add the remote to the wrong directory.\n")
+					fmt.Fprintf(os.Stderr, "  Use 'bd dolt remote list' to check for discrepancies.\n")
 				}
 				os.Exit(1)
 			}
@@ -232,17 +236,17 @@ Optionally specify remote (and optionally branch) to pull from a specific remote
 		}
 
 		if len(args) == 0 {
-			// No args: use configured remote and branch
 			fmt.Println("Pulling from Dolt remote...")
 			if err := st.Pull(ctx); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				if isRemoteNotFoundErr(err) {
-					fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+					fmt.Fprintf(os.Stderr, "Hint: use 'bd dolt remote add <name> <url>' (not 'dolt remote add').\n")
+					fmt.Fprintf(os.Stderr, "  Running 'dolt remote add' directly may add the remote to the wrong directory.\n")
+					fmt.Fprintf(os.Stderr, "  Use 'bd dolt remote list' to check for discrepancies.\n")
 				}
 				os.Exit(1)
 			}
 		} else {
-			// Remote specified, branch defaults to "main"
 			remote := args[0]
 			branch := "main"
 			if len(args) >= 2 {
@@ -252,7 +256,9 @@ Optionally specify remote (and optionally branch) to pull from a specific remote
 			if err := st.PullFromRemote(ctx, remote, branch); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				if isRemoteNotFoundErr(err) {
-					fmt.Fprintf(os.Stderr, "Hint: run 'bd dolt remote add <name> <url>' to register the remote.\n")
+					fmt.Fprintf(os.Stderr, "Hint: use 'bd dolt remote add <name> <url>' (not 'dolt remote add').\n")
+					fmt.Fprintf(os.Stderr, "  Running 'dolt remote add' directly may add the remote to the wrong directory.\n")
+					fmt.Fprintf(os.Stderr, "  Use 'bd dolt remote list' to check for discrepancies.\n")
 				}
 				os.Exit(1)
 			}
@@ -615,7 +621,7 @@ var doltRemoteAddCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		name, url := args[0], args[1]
-		dbPath := st.Path()
+		dbPath := st.CLIDir()
 
 		// Check existing remotes on both surfaces
 		sqlRemotes, _ := st.ListRemotes(ctx)
@@ -700,7 +706,7 @@ var doltRemoteListCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Error: no store available\n")
 			os.Exit(1)
 		}
-		dbPath := st.Path()
+		dbPath := st.CLIDir()
 
 		sqlRemotes, sqlErr := st.ListRemotes(ctx)
 		if sqlErr != nil {
@@ -811,7 +817,7 @@ var doltRemoteRemoveCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		name := args[0]
-		dbPath := st.Path()
+		dbPath := st.CLIDir()
 
 		// Check both surfaces for conflicts
 		sqlRemotes, _ := st.ListRemotes(ctx)
@@ -1106,6 +1112,19 @@ func setDoltConfig(key, value string, updateConfig bool) {
 		yamlKey = "dolt.user"
 
 	case "data-dir":
+		// GH#2438: In server mode, data-dir has no effect on which database
+		// the server connects to. Setting it silently switches the local
+		// resolution path without affecting the running server, causing
+		// commands to operate on the wrong (often empty) database.
+		if value != "" && cfg.IsDoltServerMode() {
+			fmt.Fprintf(os.Stderr, "Error: setting data-dir in server mode is not supported (GH#2438).\n")
+			fmt.Fprintf(os.Stderr, "In server mode, the database is determined by the 'database' config key,\n")
+			fmt.Fprintf(os.Stderr, "not the local data directory. Setting data-dir would silently disconnect\n")
+			fmt.Fprintf(os.Stderr, "from the configured database '%s'.\n", cfg.GetDoltDatabase())
+			fmt.Fprintf(os.Stderr, "\nTo change which database to use:\n")
+			fmt.Fprintf(os.Stderr, "  bd dolt set database <name>\n")
+			os.Exit(1)
+		}
 		if value == "" {
 			// Allow clearing the custom data dir (revert to default .beads/dolt)
 			cfg.DoltDataDir = ""

@@ -293,14 +293,15 @@ environment variable.`,
 			initDBDirAbs = filepath.Clean(initDBDir)
 		}
 
-		useLocalBeads := filepath.Clean(initDBDirAbs) == filepath.Clean(beadsDirAbs)
-
-		// Shared server mode: dolt data lives in ~/.beads/shared-server/dolt/
-		// (a different path tree), but the project still needs its local .beads/
-		// for metadata.json, config.yaml, .gitignore, etc.
-		if doltserver.IsSharedServerMode() {
-			useLocalBeads = true
-		}
+		// Always create local .beads/ when using default location (CWD/.beads).
+		// The local directory is needed for metadata.json, config.yaml, .gitignore,
+		// interactions.jsonl, and hooks — regardless of where dolt data lives.
+		// Only skip when BEADS_DIR explicitly points outside the project.
+		//
+		// Previous logic only created .beads/ when the dolt data dir was a
+		// subdirectory of .beads/, which broke server mode with external
+		// BEADS_DOLT_DATA_DIR or BEADS_DOLT_* env vars (GH#2519).
+		useLocalBeads := !hasExplicitBeadsDir || filepath.Clean(initDBDirAbs) == filepath.Clean(beadsDirAbs)
 
 		if useLocalBeads {
 			// Create .beads directory
@@ -948,6 +949,16 @@ environment variable.`,
 		fmt.Printf("  Issue prefix: %s\n", ui.RenderAccent(prefix))
 		fmt.Printf("  Issues will be named: %s\n\n", ui.RenderAccent(prefix+"-<hash> (e.g., "+prefix+"-a3f2dd)"))
 		fmt.Printf("Run %s to get started.\n\n", ui.RenderAccent("bd quickstart"))
+
+		// Detect backup files from a previous session (GH#2327).
+		// This catches the branch-switch scenario: user ran bd init on a new
+		// branch and the database was created fresh, but backup JSONL files
+		// exist from a prior backup on this or another branch.
+		if !bootstrappedFromRemote && dolt.HasBackupFiles(beadsDir) {
+			fmt.Printf("  %s Backup files detected in .beads/backup/\n", ui.RenderWarn("!"))
+			fmt.Printf("    To restore issues from a previous backup, run:\n")
+			fmt.Printf("      %s\n\n", ui.RenderAccent("bd backup restore"))
+		}
 
 		// Run limited diagnostics to verify init succeeded.
 		// Uses runInitDiagnostics (not runDiagnostics) to only check things

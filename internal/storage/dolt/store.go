@@ -706,6 +706,13 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	// replaces the former branch-per-polecat approach (BD_BRANCH).
 	store.branch = "main"
 
+	// GH#2315: Sync CLI remotes into SQL server on store open.
+	// After a server restart, dolt_remotes is empty (not persisted across sessions).
+	// CLI remotes survive in .dolt/config. Re-register them so DOLT_PUSH/DOLT_PULL work.
+	if !cfg.ReadOnly {
+		store.syncCLIRemotesToSQL(ctx)
+	}
+
 	return store, nil
 }
 
@@ -1009,7 +1016,9 @@ func initSchemaOnDB(ctx context.Context, db *sql.DB) error {
 	_, err = db.ExecContext(ctx, "ALTER TABLE dependencies DROP FOREIGN KEY fk_dep_depends_on")
 	if err == nil {
 		// DDL change succeeded - commit it so it persists (required for Dolt server mode)
-		_, _ = db.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', 'migration: remove fk_dep_depends_on for external references')") // Best effort: migration commit is advisory; schema change already applied
+		// GH#2455: Stage only the affected table, not all dirty tables.
+		_, _ = db.ExecContext(ctx, "CALL DOLT_ADD('dependencies')")
+		_, _ = db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'migration: remove fk_dep_depends_on for external references')") // Best effort: migration commit is advisory; schema change already applied
 	} else if !strings.Contains(strings.ToLower(err.Error()), "can't drop") &&
 		!strings.Contains(strings.ToLower(err.Error()), "doesn't exist") &&
 		!strings.Contains(strings.ToLower(err.Error()), "check that it exists") &&
@@ -1171,9 +1180,11 @@ func (s *DoltStore) Path() string {
 	return s.dbPath
 }
 
-// cliDir returns the directory for dolt CLI operations (push/pull/remote/fetch).
-// The actual database lives in a subdirectory of dbPath named after the database.
-func (s *DoltStore) cliDir() string {
+// CLIDir returns the directory for dolt CLI operations (push/pull/remote/fetch).
+// The actual database lives in a subdirectory of Path() named after the database.
+// Use this instead of Path() when running dolt CLI commands that target the
+// actual database (e.g., remote add/remove, push, pull).
+func (s *DoltStore) CLIDir() string {
 	if s.dbPath == "" {
 		return ""
 	}
@@ -1193,20 +1204,115 @@ func (s *DoltStore) commitAuthorString() string {
 	return fmt.Sprintf("%s <%s>", s.committerName, s.committerEmail)
 }
 
-// Commit creates a Dolt commit with the given message
+// Commit creates a Dolt commit with the given message.
+//
+// GH#2455: Stages all dirty tables EXCEPT config, then commits with '-m'.
+// The old '-Am' approach staged ALL dirty tables including config, which
+// swept up stale issue_prefix changes from concurrent operations. By
+// excluding config from automatic staging, we prevent the corruption.
+//
+// Callers that intentionally modify config (e.g., CommitPending after
+// 'bd config set') must call CommitWithConfig instead.
 func (s *DoltStore) Commit(ctx context.Context, message string) (retErr error) {
 	ctx, span := doltTracer.Start(ctx, "dolt.commit",
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(s.doltSpanAttrs()...),
 	)
 	defer func() { endSpan(span, retErr) }()
+
+	// Pin a single connection so all operations run on the same Dolt session.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Close()
+
+	// GH#2455: Stage all dirty tables EXCEPT config. Query dolt_status for
+	// dirty tables and stage each one individually, skipping config to avoid
+	// sweeping up stale issue_prefix changes from concurrent operations.
+	rows, err := conn.QueryContext(ctx, "SELECT table_name FROM dolt_status")
+	if err != nil {
+		// If dolt_status fails, fall back to nothing (rare edge case).
+		return fmt.Errorf("failed to query dolt_status: %w", err)
+	}
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("failed to scan dolt_status: %w", err)
+		}
+		if table != "config" {
+			tables = append(tables, table)
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to iterate dolt_status: %w", err)
+	}
+
+	if len(tables) == 0 {
+		return nil // Nothing to commit (all changes were config-only or dolt_ignore'd)
+	}
+
+	for _, table := range tables {
+		if _, err := conn.ExecContext(ctx, "CALL DOLT_ADD(?)", table); err != nil {
+			// Best effort: some tables may be dolt_ignore'd (e.g., wisps).
+			// DOLT_ADD fails for ignored tables; skip silently.
+			continue
+		}
+	}
+
 	// NOTE: In SQL procedure mode, Dolt defaults author to the authenticated SQL user
 	// (e.g. root@localhost). Always pass an explicit author for deterministic history.
-	if _, err := s.db.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)", message, s.commitAuthorString()); err != nil {
+	if _, err := conn.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)", message, s.commitAuthorString()); err != nil {
 		if isDoltNothingToCommit(err) {
 			return nil
 		}
 		return fmt.Errorf("failed to commit: %w", err)
+	}
+
+	return nil
+}
+
+// CommitWithConfig creates a Dolt commit that includes the config table.
+// Use this instead of Commit when the caller intentionally modified config
+// (e.g., CommitPending after 'bd config set', 'bd init', or 'bd rename-prefix').
+// GH#2455: Commit() excludes config to prevent sweeping up stale changes.
+func (s *DoltStore) CommitWithConfig(ctx context.Context, message string) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', ?, '--author', ?)", message, s.commitAuthorString()); err != nil {
+		if isDoltNothingToCommit(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to commit: %w", err)
+	}
+	return nil
+}
+
+// doltAddAndCommit stages the specified tables and commits on a pinned
+// connection. This prevents DOLT_COMMIT('-Am') from sweeping up stale
+// working set changes from concurrent operations (GH#2455).
+func (s *DoltStore) doltAddAndCommit(ctx context.Context, tables []string, commitMsg string) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Close()
+
+	for _, table := range tables {
+		if _, err := conn.ExecContext(ctx, "CALL DOLT_ADD(?)", table); err != nil {
+			return fmt.Errorf("dolt add %s: %w", table, err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)",
+		commitMsg, s.commitAuthorString()); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("dolt commit: %w", err)
 	}
 	return nil
 }
@@ -1237,7 +1343,10 @@ func (s *DoltStore) CommitPending(ctx context.Context, actor string) (bool, erro
 	}
 
 	msg := s.buildBatchCommitMessage(ctx, actor)
-	if err := s.Commit(ctx, msg); err != nil {
+	// GH#2455: CommitPending is an explicit user action (bd dolt commit) that
+	// should include ALL pending changes, including config. Use CommitWithConfig
+	// instead of Commit to ensure intentional config changes are committed.
+	if err := s.CommitWithConfig(ctx, msg); err != nil {
 		// Dolt may report "nothing to commit" even when Status() showed changes
 		// (e.g., system tables or schema-only diffs). Treat as no-op.
 		errLower := strings.ToLower(err.Error())
@@ -1354,13 +1463,13 @@ func (s *DoltStore) isGitProtocolRemote(ctx context.Context) bool {
 				// Verify remote exists in CLI directory before routing to CLI push/pull.
 				// When the dolt sql-server is externally managed, remotes may exist only
 				// on the server's filesystem, not in the local dbPath.
-				return s.cliDir() != "" && doltutil.FindCLIRemote(s.cliDir(), s.remote) != ""
+				return s.CLIDir() != "" && doltutil.FindCLIRemote(s.CLIDir(), s.remote) != ""
 			}
 		}
 	}
 	// Fall back to CLI remotes (covers drift where remote exists only in filesystem)
-	if s.cliDir() != "" {
-		if url := doltutil.FindCLIRemote(s.cliDir(), s.remote); url != "" {
+	if s.CLIDir() != "" {
+		if url := doltutil.FindCLIRemote(s.CLIDir(), s.remote); url != "" {
 			return doltutil.IsGitProtocolURL(url)
 		}
 	}
@@ -1377,7 +1486,7 @@ func (s *DoltStore) shouldUseCLIForAuth(ctx context.Context) bool {
 		return true
 	}
 	if s.remoteUser != "" || s.remotePassword != "" {
-		return s.cliDir() != ""
+		return s.CLIDir() != ""
 	}
 	return false
 }
@@ -1406,7 +1515,7 @@ func (s *DoltStore) doltCLIPush(ctx context.Context, force bool, creds *remoteCr
 	}
 	args = append(args, s.remote, s.branch)
 	cmd := exec.CommandContext(ctx, "dolt", args...) // #nosec G204 -- fixed command with validated remote/branch
-	cmd.Dir = s.cliDir()
+	cmd.Dir = s.CLIDir()
 	creds.applyToCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1428,7 +1537,7 @@ func (s *DoltStore) doltCLIPull(ctx context.Context, creds *remoteCredentials) e
 	}
 	args = append(args, s.remote, s.branch)
 	cmd := exec.CommandContext(ctx, "dolt", args...) // #nosec G204 -- fixed command
-	cmd.Dir = s.cliDir()
+	cmd.Dir = s.CLIDir()
 	creds.applyToCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1551,7 +1660,7 @@ func (s *DoltStore) shouldUseCLIForAuthRemote(ctx context.Context, remote string
 	}
 	creds := s.credentialsForRemote(ctx, remote)
 	if creds != nil && !creds.empty() {
-		return s.cliDir() != ""
+		return s.CLIDir() != ""
 	}
 	return false
 }
@@ -1670,7 +1779,7 @@ func (s *DoltStore) doltCLIPushToRemote(ctx context.Context, force bool, remote,
 	}
 	args = append(args, remote, branch)
 	cmd := exec.CommandContext(ctx, "dolt", args...)
-	cmd.Dir = s.cliDir()
+	cmd.Dir = s.CLIDir()
 	creds.applyToCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1689,7 +1798,7 @@ func (s *DoltStore) doltCLIPullFromRemote(ctx context.Context, remote, branch st
 	}
 	args = append(args, remote, branch)
 	cmd := exec.CommandContext(ctx, "dolt", args...)
-	cmd.Dir = s.cliDir()
+	cmd.Dir = s.CLIDir()
 	creds.applyToCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1797,8 +1906,11 @@ func (s *DoltStore) tryAutoResolveMetadataConflicts(ctx context.Context, tx *sql
 		return false, fmt.Errorf("failed to resolve metadata conflicts: %w", err)
 	}
 
-	// Commit the merge with resolved conflicts.
-	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-Am', 'auto-resolve metadata merge conflicts (GH#2466)')"); err != nil {
+	// GH#2455: Stage only metadata (the table we resolved), not all dirty tables.
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_ADD('metadata')"); err != nil {
+		return false, fmt.Errorf("failed to stage metadata: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'auto-resolve metadata merge conflicts (GH#2466)')"); err != nil {
 		return false, fmt.Errorf("failed to commit resolved conflicts: %w", err)
 	}
 

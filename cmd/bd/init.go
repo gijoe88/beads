@@ -553,6 +553,8 @@ environment variable.`,
 				_ = store.Close()
 				FatalError("failed to set issue prefix: %v", err)
 			}
+		} else if cmd.Flags().Changed("prefix") && existing != prefix {
+			fmt.Fprintf(os.Stderr, "%s --prefix %q ignored: cloned database uses prefix %q\n", ui.RenderWarn("⚠"), prefix, existing)
 		}
 
 		// === TRACKING METADATA (Pattern B: Warn and Continue) ===

@@ -317,6 +317,62 @@ func IsMainRepoBare() bool {
 	return strings.TrimSpace(string(output)) == "true"
 }
 
+// WorktreeInfo contains information about a git worktree.
+type WorktreeInfo struct {
+	Path     string
+	Branch   string
+	Head     string
+	Detached bool
+	Bare     bool
+}
+
+// ListWorktrees returns information about all worktrees in the repository.
+// This is useful for scanning sibling worktrees in the bare repo pattern.
+func ListWorktrees() ([]WorktreeInfo, error) {
+	mainRepoRoot, err := GetMainRepoRoot()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get main repo root: %w", err)
+	}
+
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = mainRepoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list worktrees: %w", err)
+	}
+
+	var worktrees []WorktreeInfo
+	var current *WorktreeInfo
+
+	for _, line := range strings.Split(string(output), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			if current != nil {
+				worktrees = append(worktrees, *current)
+			}
+			current = &WorktreeInfo{
+				Path: strings.TrimPrefix(line, "worktree "),
+			}
+		case current == nil:
+			continue
+		case strings.HasPrefix(line, "HEAD "):
+			current.Head = strings.TrimPrefix(line, "HEAD ")
+		case strings.HasPrefix(line, "branch refs/heads/"):
+			current.Branch = strings.TrimPrefix(line, "branch refs/heads/")
+		case line == "detached":
+			current.Detached = true
+		case line == "bare":
+			current.Bare = true
+		}
+	}
+
+	if current != nil {
+		worktrees = append(worktrees, *current)
+	}
+
+	return worktrees, nil
+}
+
 // IsJujutsuRepo returns true if the current directory is in a jujutsu (jj) repository.
 // Jujutsu stores its data in a .jj directory at the repository root.
 func IsJujutsuRepo() bool {

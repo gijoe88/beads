@@ -206,3 +206,74 @@ func TestIsMainRepoBare(t *testing.T) {
 		}
 	})
 }
+
+func TestListWorktrees(t *testing.T) {
+	t.Run("lists worktrees in bare repo pattern", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		projectDir := filepath.Join(tmpDir, "project")
+
+		runGit := func(dir string, args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+			}
+		}
+
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("Failed to create project dir: %v", err)
+		}
+
+		runGit(projectDir, "init", "--bare", ".bare")
+
+		gitFile := filepath.Join(projectDir, ".git")
+		if err := os.WriteFile(gitFile, []byte("gitdir: .bare"), 0644); err != nil {
+			t.Fatalf("Failed to create .git file: %v", err)
+		}
+
+		runGit(projectDir, "config", "user.email", "test@test.com")
+		runGit(projectDir, "config", "user.name", "Test")
+
+		runGit(projectDir, "worktree", "add", "main", "-b", "main")
+		runGit(projectDir, "worktree", "add", "dev", "-b", "dev")
+
+		ResetCaches()
+		origDir, _ := os.Getwd()
+		defer os.Chdir(origDir)
+		os.Chdir(filepath.Join(projectDir, "main"))
+
+		worktrees, err := ListWorktrees()
+		if err != nil {
+			t.Fatalf("ListWorktrees() failed: %v", err)
+		}
+
+		if len(worktrees) < 2 {
+			t.Errorf("Expected at least 2 worktrees, got %d", len(worktrees))
+		}
+
+		var foundMain, foundDev bool
+		for _, wt := range worktrees {
+			if filepath.Base(wt.Path) == "main" {
+				foundMain = true
+				if wt.Branch != "main" {
+					t.Errorf("Expected main worktree branch 'main', got %q", wt.Branch)
+				}
+			}
+			if filepath.Base(wt.Path) == "dev" {
+				foundDev = true
+				if wt.Branch != "dev" {
+					t.Errorf("Expected dev worktree branch 'dev', got %q", wt.Branch)
+				}
+			}
+		}
+
+		if !foundMain {
+			t.Error("Expected to find 'main' worktree")
+		}
+		if !foundDev {
+			t.Error("Expected to find 'dev' worktree")
+		}
+	})
+}

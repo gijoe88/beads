@@ -1244,8 +1244,6 @@ func countExistingIssues(_ string) (int, error) {
 // For redirects, checks the redirect target and errors if it already has a database.
 // This prevents accidentally overwriting an existing canonical database (GH#bd-0qel).
 func checkExistingBeadsData(prefix string) error {
-	// Check BEADS_DIR environment variable first (matches FindBeadsDir pattern)
-	// When BEADS_DIR is set, it takes precedence over CWD and worktree checks
 	if envBeadsDir := os.Getenv("BEADS_DIR"); envBeadsDir != "" {
 		absBeadsDir := utils.CanonicalizePath(envBeadsDir)
 		return checkExistingBeadsDataAt(absBeadsDir, prefix)
@@ -1253,22 +1251,44 @@ func checkExistingBeadsData(prefix string) error {
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil // Can't determine CWD, allow init to proceed
+		return nil
 	}
 
-	// Determine where to check for .beads directory
-	// Guard with isGitRepo() check first - on Windows, git commands may hang
-	// when run outside a git repository (GH#727)
 	var beadsDir string
 	if isGitRepo() && git.IsWorktree() {
-		// For worktrees, .beads should be in the main repository root
+		if git.IsMainRepoBare() {
+			worktrees, err := git.ListWorktrees()
+			if err != nil {
+				return nil
+			}
+			for _, wt := range worktrees {
+				if wt.Bare {
+					continue
+				}
+				wtBeadsDir := filepath.Join(wt.Path, ".beads")
+				if _, err := os.Stat(wtBeadsDir); err == nil {
+					return fmt.Errorf(`
+Error: Found existing .beads in sibling worktree: %s
+
+In the bare repo worktree pattern, all worktrees share a single .beads database.
+
+To fix this:
+  1. The database is already initialized in: %s
+  2. Use that worktree, or create a redirect:
+     bd worktree create %s --branch <branch-name>
+
+For more information, see: https://github.com/steveyegge/beads/blob/main/docs/WORKTREES.md
+`, wtBeadsDir, wtBeadsDir, wt.Path)
+				}
+			}
+			return nil
+		}
 		mainRepoRoot, err := git.GetMainRepoRoot()
 		if err != nil {
-			return nil // Can't determine main repo root, allow init to proceed
+			return nil
 		}
 		beadsDir = filepath.Join(mainRepoRoot, ".beads")
 	} else {
-		// For regular repos (or non-git directories), check current directory
 		beadsDir = filepath.Join(cwd, ".beads")
 	}
 

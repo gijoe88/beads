@@ -1374,15 +1374,17 @@ func TestInitBEADS_DIR(t *testing.T) {
 
 		// Initialize bare repo
 		runGit(projectDir, "init", "--bare", ".bare")
-		runGit(projectDir, "config", "user.email", "test@test.com")
-		runGit(projectDir, "config", "user.name", "Test")
 
-		// Create .git file pointing to .bare
+		// Create .git file pointing to .bare BEFORE running config commands
+		// (git commands need the .git file to find the repository)
 		gitFile := filepath.Join(projectDir, ".git")
 		gitFileContent := "gitdir: .bare"
 		if err := os.WriteFile(gitFile, []byte(gitFileContent), 0644); err != nil {
 			t.Fatalf("Failed to create .git file: %v", err)
 		}
+
+		runGit(projectDir, "config", "user.email", "test@test.com")
+		runGit(projectDir, "config", "user.name", "Test")
 
 		// Create main branch worktree
 		mainWorktree := filepath.Join(projectDir, "main")
@@ -1431,6 +1433,96 @@ func TestInitBEADS_DIR(t *testing.T) {
 		expectedDBPath := filepath.Join(beadsInWorktree, "dolt")
 		if _, statErr := os.Stat(expectedDBPath); os.IsNotExist(statErr) {
 			t.Errorf("Dolt database was not created at: %s", expectedDBPath)
+		}
+	})
+
+	// Bare repo worktree pattern: block init if another worktree already has .beads
+	t.Run("BareRepoWorktreePattern_BlocksDuplicateInit", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Skipping worktree test on Windows")
+		}
+
+		resetBeadsDirState(t)
+
+		tmpDir := t.TempDir()
+		projectDir := filepath.Join(tmpDir, "myproject")
+
+		runGit := func(dir string, args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, out)
+			}
+		}
+
+		// Create bare repo worktree pattern
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("Failed to create project dir: %v", err)
+		}
+
+		runGit(projectDir, "init", "--bare", ".bare")
+
+		// Create .git file BEFORE config commands (git needs it to find the repo)
+		gitFile := filepath.Join(projectDir, ".git")
+		gitFileContent := "gitdir: .bare"
+		if err := os.WriteFile(gitFile, []byte(gitFileContent), 0644); err != nil {
+			t.Fatalf("Failed to create .git file: %v", err)
+		}
+
+		runGit(projectDir, "config", "user.email", "test@test.com")
+		runGit(projectDir, "config", "user.name", "Test")
+
+		// Create main branch worktree
+		mainWorktree := filepath.Join(projectDir, "main")
+		runGit(projectDir, "worktree", "add", "main", "-b", "main")
+
+		// Create dev branch worktree
+		devWorktree := filepath.Join(projectDir, "dev")
+		runGit(projectDir, "worktree", "add", "dev", "-b", "dev")
+
+		// Initialize beads in main worktree
+		beads.ResetCaches()
+		git.ResetCaches()
+		t.Chdir(mainWorktree)
+
+		rootCmd.SetArgs([]string{"init", "--prefix", "bare-dupe", "--skip-hooks", "--quiet"})
+		err := rootCmd.Execute()
+		if err != nil {
+			t.Fatalf("bd init should succeed from main worktree: %v", err)
+		}
+
+		// Verify .beads was created in main worktree
+		beadsInMain := filepath.Join(mainWorktree, ".beads")
+		if _, statErr := os.Stat(beadsInMain); os.IsNotExist(statErr) {
+			t.Fatalf(".beads should be created in main worktree: %s", beadsInMain)
+		}
+
+		// Now check that init from dev worktree would be blocked
+		// (use checkExistingBeadsData directly to avoid os.Exit)
+		beads.ResetCaches()
+		git.ResetCaches()
+		t.Chdir(devWorktree)
+
+		err = checkExistingBeadsData("bare-dupe2")
+		if err == nil {
+			t.Fatal("checkExistingBeadsData should FAIL from dev worktree when main worktree already has .beads")
+		}
+
+		// Verify error message mentions the sibling worktree
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "sibling worktree") {
+			t.Errorf("Error should mention sibling worktree, got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, mainWorktree) {
+			t.Errorf("Error should mention main worktree path, got: %s", errMsg)
+		}
+
+		// Verify no .beads was created in dev worktree
+		beadsInDev := filepath.Join(devWorktree, ".beads")
+		if _, statErr := os.Stat(beadsInDev); statErr == nil {
+			t.Errorf(".beads should NOT be created in dev worktree: %s", beadsInDev)
 		}
 	})
 

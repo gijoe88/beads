@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/doltutil"
 )
 
 // Credential storage and encryption for federation peers.
@@ -259,6 +260,18 @@ func (s *DoltStore) AddFederationPeer(ctx context.Context, peer *storage.Federat
 		// Ignore "remote already exists" errors
 		if !strings.Contains(err.Error(), "already exists") {
 			return fmt.Errorf("failed to add dolt remote: %w", err)
+		}
+	}
+
+	// If credentials are provided, also add the remote to CLI config
+	// so federation operations can use CLI path (which has access to DOLT_REMOTE_PASSWORD)
+	if peer.Username != "" || peer.Password != "" {
+		cliDir := s.CLIDir()
+		if cliDir != "" {
+			if err := doltutil.AddCLIRemote(cliDir, peer.Name, peer.RemoteURL); err != nil {
+				// Log warning but don't fail - SQL remote was added successfully
+				// CLI path will be unavailable but SQL path may still work
+			}
 		}
 	}
 

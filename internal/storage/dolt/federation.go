@@ -348,7 +348,17 @@ func (s *DoltStore) Sync(ctx context.Context, peer string, strategy string) (*Sy
 		result.PulledCommits = 1 // Simplified - could count actual commits
 	}
 
-	// Step 5: Push our changes to peer
+	// Record last sync time BEFORE push, so it gets included in the push
+	_ = s.setLastSyncTime(ctx, peer) // Best effort: sync timestamp is advisory for scheduling
+
+	// Commit the setLastSyncTime change so it gets pushed
+	if err := s.Commit(ctx, fmt.Sprintf("sync with %s", peer)); err != nil {
+		if !isDoltNothingToCommit(err) {
+			result.PushError = fmt.Errorf("failed to commit sync timestamp: %w", err)
+		}
+	}
+
+	// Step 5: Push our changes to peer (including the sync timestamp commit)
 	if err := s.PushTo(ctx, peer); err != nil {
 		// Push failure is not fatal - peer may not accept pushes
 		result.PushError = err
@@ -356,8 +366,14 @@ func (s *DoltStore) Sync(ctx context.Context, peer string, strategy string) (*Sy
 		result.Pushed = true
 	}
 
-	// Record last sync time
-	_ = s.setLastSyncTime(ctx, peer) // Best effort: sync timestamp is advisory for scheduling
+	// Step 6: Fetch to update remote-tracking branch after push
+	// This ensures SyncStatus correctly shows 0 ahead after a successful sync.
+	if err := s.Fetch(ctx, peer); err != nil {
+		// Log but don't fail - status may be slightly inaccurate until next fetch
+		if result.PushError == nil {
+			result.PushError = fmt.Errorf("post-sync fetch failed: %w", err)
+		}
+	}
 
 	result.EndTime = time.Now()
 	return result, nil
@@ -398,12 +414,34 @@ func (s *DoltStore) peerHasCredentials(ctx context.Context, peerName string) boo
 // CLI path is required when:
 // 1. URL is git-protocol (SSH, git+https://, git://), OR
 // 2. Credentials exist (SQL path can't access DOLT_REMOTE_PASSWORD env var)
+//
+// When credentials exist but CLI remote is missing, it is auto-created from
+// the SQL remote to enable CLI path. This handles peers added before the
+// CLI remote sync fix.
 func (s *DoltStore) shouldUseCLIForPeer(ctx context.Context, peer string) bool {
 	if s.isPeerGitProtocolRemote(ctx, peer) {
 		return true
 	}
 	if s.peerHasCredentials(ctx, peer) {
-		return s.CLIDir() != "" && doltutil.FindCLIRemote(s.CLIDir(), peer) != ""
+		cliDir := s.CLIDir()
+		if cliDir == "" {
+			return false
+		}
+		if doltutil.FindCLIRemote(cliDir, peer) != "" {
+			return true
+		}
+		// CLI remote missing but credentials exist - try to create it from SQL remote
+		remotes, err := s.ListRemotes(ctx)
+		if err == nil {
+			for _, r := range remotes {
+				if r.Name == peer {
+					if err := doltutil.AddCLIRemote(cliDir, peer, r.URL); err == nil {
+						return true
+					}
+					break
+				}
+			}
+		}
 	}
 	return false
 }

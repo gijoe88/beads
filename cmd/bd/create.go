@@ -674,6 +674,10 @@ var createCmd = &cobra.Command{
 				if depType == "depends-on" {
 					depType = types.DepBlocks
 				}
+				// "parent" is an alias for "parent-child"
+				if depType == "parent" {
+					depType = types.DepParentChild
+				}
 				dependsOnID = strings.TrimSpace(parts[1])
 			} else {
 				// Default to "blocks" if no type specified

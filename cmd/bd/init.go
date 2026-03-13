@@ -534,7 +534,7 @@ environment variable.`,
 					Password:    bootstrapPassword,
 					Sovereignty: sovereignty,
 				}
-				if err := doltStore.AddFederationPeer(ctx, peer); err != nil {
+				if err := store.AddFederationPeer(ctx, peer); err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to auto-register federation peer '%s': %v\n", targetRemoteName, err)
 					// Non-fatal — user can add manually with: bd federation add-peer
 				} else if !quiet {

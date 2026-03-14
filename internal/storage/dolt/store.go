@@ -1832,9 +1832,6 @@ func (s *DoltStore) PullFromRemote(ctx context.Context, remote, branch string) e
 		if err := s.doltCLIPullFromRemote(ctx, remote, branch, creds); err != nil {
 			return err
 		}
-		if err := s.resetAutoIncrements(ctx); err != nil {
-			return fmt.Errorf("failed to reset auto-increments after pull: %w", err)
-		}
 		return nil
 	}
 	var pullErr error
@@ -1845,9 +1842,6 @@ func (s *DoltStore) PullFromRemote(ctx context.Context, remote, branch string) e
 	}
 	if pullErr != nil {
 		return fmt.Errorf("failed to pull from %s/%s: %w", remote, branch, pullErr)
-	}
-	if err := s.resetAutoIncrements(ctx); err != nil {
-		return fmt.Errorf("failed to reset auto-increments after pull: %w", err)
 	}
 	return nil
 }
@@ -2020,7 +2014,6 @@ func (s *DoltStore) tryAutoResolveMetadataConflicts(ctx context.Context, tx *sql
 
 	return true, nil
 }
-
 
 // Branch creates a new branch
 func (s *DoltStore) Branch(ctx context.Context, name string) (retErr error) {

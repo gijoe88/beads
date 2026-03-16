@@ -193,10 +193,12 @@ func ParseHierarchicalID(id string) (parentID string, childNum int, ok bool) {
 	return parentID, num, true
 }
 
-// AllEphemeral returns true if every issue in the slice is ephemeral.
-func AllEphemeral(issues []*types.Issue) bool {
+// AllWisps returns true if every issue in the slice should be routed to the
+// wisps table (i.e., is ephemeral or no-history). Used to gate the fast path
+// that skips Dolt versioning in batch creates.
+func AllWisps(issues []*types.Issue) bool {
 	for _, issue := range issues {
-		if !issue.Ephemeral {
+		if !issue.Ephemeral && !issue.NoHistory {
 			return false
 		}
 	}
@@ -274,7 +276,7 @@ func PersistLabels(ctx context.Context, tx *sql.Tx, issue *types.Issue) error {
 }
 
 // PersistComments writes issue.Comments into the appropriate comments table.
-// The comments table uses an auto-increment PK, so ON DUPLICATE KEY UPDATE
+// The comments table uses a UUID PK (DEFAULT UUID()), so ON DUPLICATE KEY UPDATE
 // would never match. Instead, we check for an existing identical comment
 // (same issue_id, author, and created_at) before inserting to prevent
 // duplicates on re-import.
@@ -292,7 +294,7 @@ func PersistComments(ctx context.Context, tx *sql.Tx, issue *types.Issue) error 
 			createdAt = time.Now().UTC()
 		}
 		// Check for existing identical comment to prevent duplicates on re-import.
-		// The auto-increment PK means ON DUPLICATE KEY UPDATE would never fire,
+		// The UUID PK means ON DUPLICATE KEY UPDATE would never fire,
 		// so we do an explicit existence check instead.
 		var exists int
 		//nolint:gosec // G201: table is determined by ephemeral flag

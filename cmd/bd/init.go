@@ -220,8 +220,11 @@ environment variable.`,
 		if envBeadsDir := os.Getenv("BEADS_DIR"); envBeadsDir != "" {
 			beadsDirForInit = utils.CanonicalizePath(envBeadsDir)
 		} else {
-			localBeadsDir := filepath.Join(".", ".beads")
-			beadsDirForInit = beads.FollowRedirect(localBeadsDir)
+			beadsDirForInit = beads.GetWorktreeFallbackBeadsDir()
+			if beadsDirForInit == "" {
+				localBeadsDir := filepath.Join(".", ".beads")
+				beadsDirForInit = beads.FollowRedirect(localBeadsDir)
+			}
 		}
 
 		// Determine storage path.
@@ -241,9 +244,6 @@ environment variable.`,
 			FatalError("failed to get current directory: %v", err)
 		}
 
-		// Check if we're in a git worktree
-		// Guard with isGitRepo() check first - on Windows, git commands may hang
-		// when run outside a git repository (GH#727)
 		hasExplicitBeadsDir := os.Getenv("BEADS_DIR") != ""
 		isWorktree := false
 		if isGitRepo() {
@@ -443,6 +443,16 @@ environment variable.`,
 					fmt.Printf("  %s Bootstrapped from remote: %s (peer: %s)\n", ui.RenderPass("✓"), gitRemoteURL, peerName)
 				}
 			}
+		} else if !force && isGitRepo() && !isBareGitRepo() {
+			// Warn if origin has an existing beads database.
+			// Don't auto-clone here — bd bootstrap handles that.
+			if originURL, err := gitRemoteGetURL("origin"); err == nil && originURL != "" {
+				if gitLsRemoteHasRef("origin", "refs/dolt/data") {
+					fmt.Fprintf(os.Stderr, "Note: origin has an existing beads database (refs/dolt/data).\n")
+					fmt.Fprintf(os.Stderr, "  Run 'bd bootstrap' instead to clone it.\n")
+					fmt.Fprintf(os.Stderr, "  Continuing with fresh database initialization.\n\n")
+				}
+			}
 		}
 
 		// Build config. Beads always uses dolt sql-server.
@@ -491,6 +501,11 @@ environment variable.`,
 			os.Exit(1)
 		}
 		defer initLock.Unlock()
+
+		// Clean stale noms LOCK files from previously crashed processes
+		// before opening the embedded store. Without this, a crashed init
+		// leaves LOCK files that cause nil pointer dereference in DoltDB.
+		dolt.CleanStaleNomsLocks(doltserver.ResolveDoltDir(beadsDir))
 
 		store, err := newDoltStore(ctx, doltCfg)
 		if err != nil {
@@ -966,6 +981,12 @@ environment variable.`,
 			}
 			fmt.Printf("  Mode: %s\n", ui.RenderAccent("server"))
 			fmt.Printf("  Server: %s\n", ui.RenderAccent(fmt.Sprintf("%s@%s:%d", user, host, port)))
+			// Warn when using the default localhost — this is the #1 misconfiguration
+			// for setups where Dolt runs on a remote machine (e.g., over Tailscale).
+			if serverHost == "" && os.Getenv("BEADS_DOLT_SERVER_HOST") == "" {
+				fmt.Fprintf(os.Stderr, "\n  %s Server host defaulted to %s.\n", ui.RenderWarn("⚠"), configfile.DefaultDoltServerHost)
+				fmt.Fprintf(os.Stderr, "    If your Dolt server is remote, set BEADS_DOLT_SERVER_HOST or pass --server-host.\n")
+			}
 		}
 		fmt.Printf("  Database: %s\n", ui.RenderAccent(dbName))
 		fmt.Printf("  Issue prefix: %s\n", ui.RenderAccent(prefix))
@@ -1298,11 +1319,14 @@ For more information, see: https://github.com/steveyegge/beads/blob/main/docs/WO
 			}
 			return nil
 		}
-		mainRepoRoot, err := git.GetMainRepoRoot()
+		_, err := git.GetMainRepoRoot()
 		if err != nil {
 			return nil
 		}
-		beadsDir = filepath.Join(mainRepoRoot, ".beads")
+		beadsDir = beads.GetWorktreeFallbackBeadsDir()
+		if beadsDir == "" {
+			return nil // Can't determine shared fallback, allow init to proceed
+		}
 	} else {
 		beadsDir = filepath.Join(cwd, ".beads")
 	}

@@ -102,8 +102,12 @@ func autoStartRelease(serverDir string) error {
 	return nil
 }
 
-// Compile-time interface check.
+// Compile-time interface checks.
 var _ storage.DoltStorage = (*DoltStore)(nil)
+var _ storage.RawDBAccessor = (*DoltStore)(nil)
+var _ storage.StoreLocator = (*DoltStore)(nil)
+var _ storage.LifecycleManager = (*DoltStore)(nil)
+var _ storage.PendingCommitter = (*DoltStore)(nil)
 
 // DoltStore implements the Storage interface using Dolt
 type DoltStore struct {
@@ -409,6 +413,40 @@ func endSpan(span trace.Span, err error) {
 // when started with --no-auto-commit). Without this, writes remain in an
 // ErrStoreClosed is returned when an operation is attempted on a closed store.
 var ErrStoreClosed = errors.New("store is closed")
+
+// withReadTx runs fn inside a transaction while holding the store's read-lock.
+// Used for read operations that need a *sql.Tx to share issueops functions.
+func (s *DoltStore) withReadTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	if s.closed.Load() {
+		return ErrStoreClosed
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin read tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	return fn(tx)
+}
+
+// withWriteTx runs fn inside a transaction, committing on success.
+// Used for write operations that delegate SQL work to issueops functions.
+// The caller's fn should NOT call tx.Commit — withWriteTx handles that.
+func (s *DoltStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	if s.closed.Load() {
+		return ErrStoreClosed
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin write tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 // uncommitted implicit transaction that Dolt rolls back on connection close,
 // causing silent data loss for callers that do not use db.BeginTx themselves.
@@ -1121,6 +1159,12 @@ func initSchemaOnDB(ctx context.Context, db *sql.DB) error {
 		"INSERT INTO config (`key`, `value`) VALUES ('schema_version', ?) "+
 			"ON DUPLICATE KEY UPDATE `value` = ?",
 		currentSchemaVersion, currentSchemaVersion)
+	_, _ = db.ExecContext(ctx, "CALL DOLT_ADD('config')")
+	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'schema: update schema_version')"); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "nothing to commit") {
+			return fmt.Errorf("failed to commit schema_version update: %w", err)
+		}
+	}
 
 	return nil
 }

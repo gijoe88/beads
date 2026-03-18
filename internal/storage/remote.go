@@ -14,4 +14,7 @@ type RemoteStore interface {
 	Fetch(ctx context.Context, peer string) error
 	PushTo(ctx context.Context, peer string) error
 	PullFrom(ctx context.Context, peer string) ([]Conflict, error)
+	PushToRemote(ctx context.Context, remote, branch string, setUpstream bool) error
+	ForcePushToRemote(ctx context.Context, remote, branch string) error
+	PullFromRemote(ctx context.Context, remote, branch string) error
 }

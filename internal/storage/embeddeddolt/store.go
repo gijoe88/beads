@@ -430,6 +430,18 @@ func (s *EmbeddedDoltStore) PullFrom(ctx context.Context, peer string) ([]storag
 	panic("embeddeddolt: PullFrom not implemented")
 }
 
+func (s *EmbeddedDoltStore) PushToRemote(ctx context.Context, remote, branch string, setUpstream bool) error {
+	panic("embeddeddolt: PushToRemote not implemented")
+}
+
+func (s *EmbeddedDoltStore) ForcePushToRemote(ctx context.Context, remote, branch string) error {
+	panic("embeddeddolt: ForcePushToRemote not implemented")
+}
+
+func (s *EmbeddedDoltStore) PullFromRemote(ctx context.Context, remote, branch string) error {
+	panic("embeddeddolt: PullFromRemote not implemented")
+}
+
 // ---------------------------------------------------------------------------
 // storage.SyncStore
 // ---------------------------------------------------------------------------

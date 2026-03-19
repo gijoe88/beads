@@ -660,7 +660,7 @@ bd dolt push
 bd dolt pull
 
 # Check sync configuration
-bd config get sync.mode
+bd config get sync.git-remote
 ```
 
 ## Federation Issues

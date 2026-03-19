@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/subosito/gotenv"
+
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
@@ -115,6 +117,36 @@ var readOnlyCommands = map[string]bool{
 // that would trigger file watchers. See GH#804.
 func isReadOnlyCommand(cmdName string) bool {
 	return readOnlyCommands[cmdName]
+}
+
+// loadBeadsEnvFile loads .beads/.env into process environment for per-project
+// Dolt credentials (GH#2520). Uses gotenv.Load which is non-overriding —
+// existing shell env vars always take precedence.
+// Safe to call with an empty beadsDir (no-op).
+func loadBeadsEnvFile(beadsDir string) {
+	if beadsDir == "" {
+		return
+	}
+	envFile := filepath.Join(beadsDir, ".env")
+	if _, err := os.Stat(envFile); err != nil {
+		return
+	}
+	_ = gotenv.Load(envFile)
+}
+
+// loadEnvironment runs the lightweight, always-needed environment setup that
+// must happen before the noDbCommands early return. This ensures commands like
+// "bd doctor --server" pick up per-project Dolt credentials from .beads/.env.
+//
+// This function intentionally does NOT do any store initialization, auto-migrate,
+// or telemetry setup — those belong in the store-init phase that runs after the
+// noDbCommands check.
+func loadEnvironment() {
+	// FindBeadsDir is lightweight (filesystem walk, no git subprocesses)
+	// and resolves BEADS_DIR, redirects, and worktree paths.
+	if beadsDir := beads.FindBeadsDir(); beadsDir != "" {
+		loadBeadsEnvFile(beadsDir)
+	}
 }
 
 // resolveCommandBeadsDir maps a discovered Dolt data path back to the owning
@@ -366,6 +398,10 @@ var rootCmd = &cobra.Command{
 			FatalError("%v", err)
 		}
 
+		// GH#2677: Load .beads/.env before the noDbCommands early return so that
+		// commands like "bd doctor --server" pick up per-project Dolt credentials.
+		loadEnvironment()
+
 		// GH#1093: Check noDbCommands BEFORE expensive operations
 		// to avoid spawning git subprocesses for simple commands
 		// like "bd version" that don't need database access.
@@ -375,6 +411,7 @@ var rootCmd = &cobra.Command{
 			"bash",
 			"bootstrap",
 			"completion",
+			"context", // reads config files directly, does not need DB open
 			"doctor",
 			"dolt", // bare "bd dolt" shows help only; subcommands handled below
 			"fish",
@@ -555,7 +592,10 @@ var rootCmd = &cobra.Command{
 
 		// Load config to get database name and server connection settings
 		cfg, cfgErr := configfile.Load(beadsDir)
-		if cfgErr == nil && cfg != nil {
+		if cfgErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to load beads config from %s: %v\n", beadsDir, cfgErr)
+		}
+		if cfg != nil {
 			// Always set database name (needed for bootstrap to find
 			// prefix-based databases like "beads_hq"; see #1669)
 			doltCfg.Database = cfg.GetDoltDatabase()
@@ -567,6 +607,10 @@ var rootCmd = &cobra.Command{
 			doltCfg.ServerUser = cfg.GetDoltServerUser()
 			doltCfg.ServerPassword = cfg.GetDoltServerPassword()
 			doltCfg.ServerTLS = cfg.GetDoltServerTLS()
+		} else if cfgErr == nil {
+			// Load returned (nil, nil) — no config file found.
+			// Log so silent fallback to default DB is visible.
+			fmt.Fprintf(os.Stderr, "warning: no beads configuration found in %s; database name may default incorrectly\n", beadsDir)
 		}
 		doltCfg.SyncGitRemote = config.GetString("sync.git-remote")
 
@@ -586,8 +630,11 @@ var rootCmd = &cobra.Command{
 		// Pre-flight: clean stale noms LOCK files left by crashed Dolt processes.
 		// These prevent the Dolt server from opening databases (SIGSEGV or
 		// "database is locked"). Safe because we haven't connected yet.
-		if removed, _ := dolt.CleanStaleNomsLocks(doltPath); removed > 0 {
-			debug.Logf("cleaned %d stale noms LOCK file(s) from %s", removed, doltPath)
+		// NOTE: Intentionally skipped for embedded mode.
+		if !isEmbeddedDolt {
+			if removed, _ := dolt.CleanStaleNomsLocks(doltPath); removed > 0 {
+				debug.Logf("cleaned %d stale noms LOCK file(s) from %s", removed, doltPath)
+			}
 		}
 
 		store, err = newDoltStore(rootCtx, doltCfg)

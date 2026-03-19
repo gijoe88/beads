@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
@@ -209,10 +210,6 @@ func (s *EmbeddedDoltStore) CloseIssue(ctx context.Context, id string, reason st
 
 func (s *EmbeddedDoltStore) DeleteIssue(ctx context.Context, id string) error {
 	panic("embeddeddolt: DeleteIssue not implemented")
-}
-
-func (s *EmbeddedDoltStore) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error) {
-	panic("embeddeddolt: SearchIssues not implemented")
 }
 
 // AddDependency is implemented in dependencies.go.
@@ -511,23 +508,16 @@ func (s *EmbeddedDoltStore) RenameCounterPrefix(ctx context.Context, oldPrefix, 
 // ---------------------------------------------------------------------------
 
 func (s *EmbeddedDoltStore) GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error) {
-	panic("embeddeddolt: GetDependencyRecords not implemented")
-}
-
-func (s *EmbeddedDoltStore) GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error) {
-	panic("embeddeddolt: GetDependencyRecordsForIssues not implemented")
-}
-
-func (s *EmbeddedDoltStore) GetAllDependencyRecords(ctx context.Context) (map[string][]*types.Dependency, error) {
-	panic("embeddeddolt: GetAllDependencyRecords not implemented")
-}
-
-func (s *EmbeddedDoltStore) GetDependencyCounts(ctx context.Context, issueIDs []string) (map[string]*types.DependencyCounts, error) {
-	panic("embeddeddolt: GetDependencyCounts not implemented")
-}
-
-func (s *EmbeddedDoltStore) GetBlockingInfoForIssues(ctx context.Context, issueIDs []string) (blockedByMap map[string][]string, blocksMap map[string][]string, parentMap map[string]string, err error) {
-	panic("embeddeddolt: GetBlockingInfoForIssues not implemented")
+	var result []*types.Dependency
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		m, err := issueops.GetDependencyRecordsForIssuesInTx(ctx, tx, []string{issueID})
+		if err != nil {
+			return err
+		}
+		result = m[issueID]
+		return nil
+	})
+	return result, err
 }
 
 func (s *EmbeddedDoltStore) IsBlocked(ctx context.Context, issueID string) (bool, []string, error) {
@@ -562,16 +552,8 @@ func (s *EmbeddedDoltStore) ImportIssueComment(ctx context.Context, issueID, aut
 	panic("embeddeddolt: ImportIssueComment not implemented")
 }
 
-func (s *EmbeddedDoltStore) GetCommentCounts(ctx context.Context, issueIDs []string) (map[string]int, error) {
-	panic("embeddeddolt: GetCommentCounts not implemented")
-}
-
 func (s *EmbeddedDoltStore) GetCommentsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Comment, error) {
 	panic("embeddeddolt: GetCommentsForIssues not implemented")
-}
-
-func (s *EmbeddedDoltStore) GetLabelsForIssues(ctx context.Context, issueIDs []string) (map[string][]string, error) {
-	panic("embeddeddolt: GetLabelsForIssues not implemented")
 }
 
 // ---------------------------------------------------------------------------
@@ -583,11 +565,29 @@ func (s *EmbeddedDoltStore) DeleteConfig(ctx context.Context, key string) error 
 }
 
 func (s *EmbeddedDoltStore) GetCustomStatuses(ctx context.Context) ([]string, error) {
-	panic("embeddeddolt: GetCustomStatuses not implemented")
+	var result []string
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.GetCustomStatusesTx(ctx, tx)
+		return err
+	})
+	if err != nil || len(result) == 0 {
+		return config.GetCustomStatusesFromYAML(), nil
+	}
+	return result, nil
 }
 
 func (s *EmbeddedDoltStore) GetCustomTypes(ctx context.Context) ([]string, error) {
-	panic("embeddeddolt: GetCustomTypes not implemented")
+	var result []string
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.GetCustomTypesTx(ctx, tx)
+		return err
+	})
+	if err != nil || len(result) == 0 {
+		return config.GetCustomTypesFromYAML(), nil
+	}
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------

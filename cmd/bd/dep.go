@@ -162,6 +162,12 @@ Examples:
 			// Check for cycles after adding dependency
 			warnIfCyclesExist(fromStore)
 
+			if isEmbeddedDolt && fromStore != nil {
+				if _, err := fromStore.CommitPending(ctx, actor); err != nil {
+					FatalErrorRespectJSON("failed to commit: %v", err)
+				}
+			}
+
 			if jsonOutput {
 				outputJSON(map[string]interface{}{
 					"status":     "added",
@@ -309,6 +315,12 @@ Examples:
 
 		// Check for cycles after adding dependency
 		warnIfCyclesExist(fromStore)
+
+		if isEmbeddedDolt && fromStore != nil {
+			if _, err := fromStore.CommitPending(ctx, actor); err != nil {
+				FatalErrorRespectJSON("failed to commit: %v", err)
+			}
+		}
 
 		if jsonOutput {
 			outputJSON(map[string]interface{}{
@@ -513,6 +525,12 @@ var depRemoveCmd = &cobra.Command{
 			FatalErrorRespectJSON("%v", err)
 		}
 
+		if isEmbeddedDolt && fromStore != nil {
+			if _, err := fromStore.CommitPending(ctx, actor); err != nil {
+				FatalErrorRespectJSON("failed to commit: %v", err)
+			}
+		}
+
 		if jsonOutput {
 			outputJSON(map[string]interface{}{
 				"status":        "removed",
@@ -559,6 +577,13 @@ Examples:
 		direction, _ := cmd.Flags().GetString("direction")
 		statusFilter, _ := cmd.Flags().GetString("status")
 		formatStr, _ := cmd.Flags().GetString("format")
+		// Handle --format json: the local --format flag shadows the hidden
+		// persistent --format on rootCmd, so "json" arrives here instead of
+		// setting jsonOutput via PersistentPreRun. Route it explicitly.
+		if strings.EqualFold(formatStr, "json") {
+			jsonOutput = true
+			formatStr = ""
+		}
 
 		// Handle --direction flag (takes precedence over deprecated --reverse)
 		if direction == "" && reverse {
@@ -608,7 +633,7 @@ Examples:
 			tree = filterTreeByStatus(tree, types.Status(statusFilter))
 		}
 
-		// Handle mermaid format
+		// Handle format presets (json handled earlier, near flag read)
 		if formatStr == "mermaid" {
 			outputMermaidTree(tree, args[0])
 			return

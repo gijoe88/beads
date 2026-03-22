@@ -264,6 +264,13 @@ var listCmd = &cobra.Command{
 		limit, _ := cmd.Flags().GetInt("limit")
 		allFlag, _ := cmd.Flags().GetBool("all")
 		formatStr, _ := cmd.Flags().GetString("format")
+		// Handle --format json: the local --format flag shadows the hidden
+		// persistent --format on rootCmd, so "json" arrives here instead of
+		// setting jsonOutput via PersistentPreRun. Route it explicitly.
+		if strings.EqualFold(formatStr, "json") {
+			jsonOutput = true
+			formatStr = ""
+		}
 		labels, _ := cmd.Flags().GetStringSlice("label")
 		labelsAny, _ := cmd.Flags().GetStringSlice("label-any")
 		labelPattern, _ := cmd.Flags().GetString("label-pattern")
@@ -310,6 +317,9 @@ var listCmd = &cobra.Command{
 		// Infra type filtering: exclude agent/rig/role/message by default
 		includeInfra, _ := cmd.Flags().GetBool("include-infra")
 
+		// Explicit type exclusion (--exclude-type)
+		excludeTypeStrs, _ := cmd.Flags().GetStringSlice("exclude-type")
+
 		// Parent filtering (--filter-parent is alias for --parent)
 		parentID, _ := cmd.Flags().GetString("parent")
 		if parentID == "" {
@@ -355,7 +365,8 @@ var listCmd = &cobra.Command{
 		if flatFormat {
 			treeFormat = false
 		}
-		prettyFormat = (prettyFormat || treeFormat) && !jsonOutput // --tree is alias for --pretty; JSON wins
+		// --tree is alias for --pretty; JSON and explicit --format win
+		prettyFormat = (prettyFormat || treeFormat) && !jsonOutput && formatStr == ""
 		watchMode, _ := cmd.Flags().GetBool("watch")
 
 		// Pager control (bd-jdz3)
@@ -434,14 +445,29 @@ var listCmd = &cobra.Command{
 				customStatuses = cs
 			}
 			if !s.IsValidWithCustom(customStatuses) {
-				FatalError("invalid status %q (valid: open, in_progress, blocked, deferred, closed, pinned, hooked)", status)
+				validList := "open, in_progress, blocked, deferred, closed, pinned, hooked"
+				if len(customStatuses) > 0 {
+					validList += ", " + strings.Join(customStatuses, ", ")
+				}
+				FatalError("invalid status %q (valid: %s)", status, validList)
 			}
 			filter.Status = &s
 		}
 
 		// Default to non-closed/non-pinned issues unless --all, --pinned, or explicit --status (GH#788, bd-uhcg)
+		// Also exclude custom statuses in done/frozen categories
 		if status == "" && !allFlag && !readyFlag && !pinnedFlag {
-			filter.ExcludeStatus = []types.Status{types.StatusClosed, types.StatusPinned}
+			excludeStatuses := []types.Status{types.StatusClosed, types.StatusPinned}
+			if store != nil {
+				if detailed, err := store.GetCustomStatusesDetailed(rootCtx); err == nil {
+					for _, cs := range detailed {
+						if cs.Category == types.CategoryDone || cs.Category == types.CategoryFrozen {
+							excludeStatuses = append(excludeStatuses, types.Status(cs.Name))
+						}
+					}
+				}
+			}
+			filter.ExcludeStatus = excludeStatuses
 		}
 		// Use Changed() to properly handle P0 (priority=0)
 		if cmd.Flags().Changed("priority") {
@@ -635,6 +661,16 @@ var listCmd = &cobra.Command{
 			}
 		}
 
+		// Explicit type exclusion from --exclude-type flag.
+		for _, raw := range excludeTypeStrs {
+			for _, t := range strings.Split(raw, ",") {
+				t = strings.TrimSpace(t)
+				if t != "" {
+					filter.ExcludeTypes = append(filter.ExcludeTypes, types.IssueType(utils.NormalizeIssueType(t)))
+				}
+			}
+		}
+
 		// When explicitly requesting an infra type, search the wisps table
 		// (where infra beads live after migration 007).
 		if isInfra(issueType) {
@@ -801,7 +837,7 @@ var listCmd = &cobra.Command{
 			return
 		}
 
-		// Handle format flag
+		// Handle format flag (non-json presets handled here; json handled earlier)
 		if formatStr != "" {
 			if err := outputFormattedList(ctx, activeStore, issues, formatStr); err != nil {
 				FatalError("%v", err)
@@ -968,6 +1004,9 @@ func init() {
 	// Infra type filtering: exclude agent/rig/role/message by default
 	listCmd.Flags().Bool("include-infra", false, "Include infrastructure beads (agent/rig/role/message) in output")
 
+	// Explicit type exclusion
+	listCmd.Flags().StringSlice("exclude-type", nil, "Exclude issue types from results (comma-separated or repeatable, e.g., --exclude-type=convoy,epic)")
+
 	// Parent filtering: filter children by parent issue
 	listCmd.Flags().String("parent", "", "Filter by parent issue ID (shows children of specified issue)")
 	listCmd.Flags().String("filter-parent", "", "Alias for --parent")
@@ -1005,7 +1044,7 @@ func init() {
 	listCmd.Flags().Bool("ready", false, "Show only ready issues (status=open, excludes hooked/in_progress/blocked/deferred)")
 
 	// Cross-rig routing: query a different rig's database (bd-rgdjr)
-	listCmd.Flags().String("rig", "", "Query a different rig's database (e.g., --rig gastown, --rig gt-, --rig gt)")
+	listCmd.Flags().String("rig", "", "Query a different rig's database (e.g., --rig my-project, --rig gt-, --rig gt)")
 
 	// Note: --json flag is defined as a persistent flag in main.go, not here
 	rootCmd.AddCommand(listCmd)

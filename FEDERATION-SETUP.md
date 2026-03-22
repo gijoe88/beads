@@ -1,8 +1,8 @@
 # Federation Setup Guide
 
 Federation enables peer-to-peer synchronization of beads databases between
-multiple machines or teams using Dolt remotes. Each installation maintains its
-own database while sharing work items with configured peers.
+multiple workspaces using Dolt remotes. Each workspace maintains its own database
+while sharing work items with configured peers.
 
 ## Overview
 

@@ -110,7 +110,7 @@ func Initialize() error {
 
 	// Automatic environment variable binding
 	// Environment variables take precedence over config file
-	// E.g., BD_JSON, BD_NO_DAEMON, BD_ACTOR, BD_DB
+	// E.g., BD_JSON, BD_NO_DAEMON, BD_DB (BD_ACTOR deprecated in favor of BEADS_ACTOR)
 	v.SetEnvPrefix("BD")
 
 	// Replace hyphens and dots with underscores for env var mapping
@@ -643,7 +643,7 @@ func GetMultiRepoConfig() *MultiRepoConfig {
 //
 //	external_projects:
 //	  beads: ../beads
-//	  gastown: /absolute/path/to/gastown
+//	  other-project: /absolute/path/to/other-project
 func GetExternalProjects() map[string]string {
 	return GetStringMapString("external_projects")
 }
@@ -754,31 +754,6 @@ func GetInfraTypesFromYAML() []string {
 // Returns nil if no custom statuses are configured in config.yaml.
 func GetCustomStatusesFromYAML() []string {
 	return getConfigList("status.custom")
-}
-
-// ===== Agent Role Configuration =====
-// These functions return agent role types from config.yaml for agent ID parsing.
-// Each role category has different parsing semantics:
-//   - Town-level: <prefix>-<role> (singleton, no rig)
-//   - Rig-level: <prefix>-<rig>-<role> (singleton per rig)
-//   - Named: <prefix>-<rig>-<role>-<name> (multiple per rig)
-
-// GetTownLevelRoles returns roles that are town-level singletons.
-// These roles have no rig association and appear as: <prefix>-<role>
-func GetTownLevelRoles() []string {
-	return getConfigList("agent_roles.town_level")
-}
-
-// GetRigLevelRoles returns roles that are rig-level singletons.
-// These roles have one instance per rig: <prefix>-<rig>-<role>
-func GetRigLevelRoles() []string {
-	return getConfigList("agent_roles.rig_level")
-}
-
-// GetNamedRoles returns roles that can have multiple named instances per rig.
-// These roles include a name suffix: <prefix>-<rig>-<role>-<name>
-func GetNamedRoles() []string {
-	return getConfigList("agent_roles.named")
 }
 
 // MetadataValidationMode returns the metadata schema validation mode.

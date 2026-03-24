@@ -489,6 +489,7 @@ rm .beads/*.backup-*.db
 
 ## See Also
 
+- [SYNC_SETUP.md](SYNC_SETUP.md) - Setting up sync across multiple computers
 - [CONFIG.md](CONFIG.md) - Full configuration reference
 - [DEPENDENCIES.md](DEPENDENCIES.md) - Dependencies and gates
 - [GIT_INTEGRATION.md](GIT_INTEGRATION.md) - Git worktrees and protected branches

@@ -442,6 +442,7 @@ var rootCmd = &cobra.Command{
 
 		// Check both the command name and parent command name for subcommands
 		cmdName := cmd.Name()
+		isSubcommand := cmd.Parent() != nil && cmd.Parent().Name() != "bd"
 		if cmd.Parent() != nil {
 			parentName := cmd.Parent().Name()
 			if parentName == "dolt" && slices.Contains(needsStoreDoltSubcommands, cmdName) {
@@ -454,11 +455,9 @@ var rootCmd = &cobra.Command{
 				return
 			}
 		}
-		parentName := ""
-		if cmd.Parent() != nil {
-			parentName = cmd.Parent().Name()
-		}
-		if slices.Contains(noDbCommands, cmdName) && parentName != "federation" {
+		// Only skip for top-level commands in noDbCommands, not subcommands
+		// that happen to share names (e.g., "bd backup init" vs "bd init").
+		if slices.Contains(noDbCommands, cmdName) && !isSubcommand {
 			return
 		}
 

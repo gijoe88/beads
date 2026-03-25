@@ -11,6 +11,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
+	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 )
 
 // FederatedStorage implementation for DoltStore
@@ -144,21 +145,7 @@ func (s *DoltStore) Fetch(ctx context.Context, peer string) error {
 
 // ListRemotes returns configured remote names and URLs.
 func (s *DoltStore) ListRemotes(ctx context.Context) ([]storage.RemoteInfo, error) {
-	rows, err := s.queryContext(ctx, "SELECT name, url FROM dolt_remotes")
-	if err != nil {
-		return nil, fmt.Errorf("failed to list remotes: %w", err)
-	}
-	defer rows.Close()
-
-	var remotes []storage.RemoteInfo
-	for rows.Next() {
-		var r storage.RemoteInfo
-		if err := rows.Scan(&r.Name, &r.URL); err != nil {
-			return nil, fmt.Errorf("failed to scan remote: %w", err)
-		}
-		remotes = append(remotes, r)
-	}
-	return remotes, rows.Err()
+	return versioncontrolops.ListRemotes(ctx, s.db)
 }
 
 // syncCLIRemotesToSQL re-registers CLI-level remotes into the SQL server.
@@ -240,11 +227,7 @@ func (s *DoltStore) migrateServerRootRemotes(cliDir string) []storage.RemoteInfo
 
 // RemoveRemote removes a configured remote.
 func (s *DoltStore) RemoveRemote(ctx context.Context, name string) error {
-	_, err := s.execContext(ctx, "CALL DOLT_REMOTE('remove', ?)", name)
-	if err != nil {
-		return fmt.Errorf("failed to remove remote %s: %w", name, err)
-	}
-	return nil
+	return versioncontrolops.RemoveRemote(ctx, s.db, name)
 }
 
 // SyncStatus returns the sync status with a peer.

@@ -185,6 +185,16 @@ Examples:
   bd doctor --migration=post   # Validate Dolt migration completed
   bd doctor --migration=pre --json  # Machine-parseable migration validation`,
 	Run: func(cmd *cobra.Command, args []string) {
+		if isEmbeddedMode() {
+			fmt.Fprintln(os.Stderr, "Note: 'bd doctor' is not yet supported in embedded mode.")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "For embedded mode troubleshooting:")
+			fmt.Fprintln(os.Stderr, "  • Verify database exists:  ls -la .beads/embeddeddolt/")
+			fmt.Fprintln(os.Stderr, "  • Check bd version:        bd version")
+			fmt.Fprintln(os.Stderr, "  • Reinitialize if needed:  bd init --force")
+			fmt.Fprintln(os.Stderr, "  • Switch to server mode:   bd init --server")
+			os.Exit(0)
+		}
 		// Use global jsonOutput set by PersistentPreRun
 
 		// Determine path to check
@@ -206,12 +216,12 @@ Examples:
 		}
 
 		// Guardrail: never run mutating bd doctor fix from orchestrator workspace root.
-		// Town-level repair must go through `gt doctor --fix` because workspace roots
-		// have additional invariants beyond beads-only repos.
+		// Workspace roots have additional invariants beyond single-project repos;
+		// repairs should go through the orchestrator's own doctor command.
 		if doctorFix && isOrchestratorRoot(absPath) {
 			FatalErrorWithHint(
 				"refusing to run 'bd doctor --fix' at orchestrator workspace root",
-				"Use 'gt doctor --fix' from workspace root, or run 'bd doctor --fix' inside a specific rig clone (e.g. <rig>/mayor/rig)",
+				"Run the orchestrator's doctor command from workspace root, or run 'bd doctor --fix' inside a specific project clone",
 			)
 		}
 

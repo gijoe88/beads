@@ -1,4 +1,4 @@
-//go:build !embeddeddolt
+//go:build !cgo
 
 package embeddeddolt
 
@@ -7,14 +7,14 @@ import (
 	"errors"
 )
 
-// EmbeddedDoltStore is a stub for builds without the embeddeddolt tag.
+// EmbeddedDoltStore is a stub for builds without CGO.
 type EmbeddedDoltStore struct {
 	dataDir  string
 	database string
 	branch   string
 }
 
-// New returns an error when the embeddeddolt build tag is not set.
+// New returns an error when CGO is not enabled.
 func New(_ context.Context, _, _, _ string) (*EmbeddedDoltStore, error) {
-	return nil, errors.New("embeddeddolt: wip, do not use")
+	return nil, errors.New("embeddeddolt: requires CGO (build with CGO_ENABLED=1)")
 }

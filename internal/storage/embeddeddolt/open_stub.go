@@ -1,4 +1,4 @@
-//go:build !embeddeddolt
+//go:build !cgo
 
 package embeddeddolt
 
@@ -8,8 +8,7 @@ import (
 	"errors"
 )
 
-// OpenSQL is a stub that returns an error when the embeddeddolt build tag is
-// not set. Build with -tags embeddeddolt to enable.
+// OpenSQL is a stub that returns an error when CGO is not enabled.
 func OpenSQL(_ context.Context, _, _, _ string) (*sql.DB, func() error, error) {
-	return nil, nil, errors.New("embeddeddolt: build with -tags embeddeddolt to enable")
+	return nil, nil, errors.New("embeddeddolt: requires CGO (build with CGO_ENABLED=1)")
 }
